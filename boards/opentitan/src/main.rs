@@ -126,6 +126,8 @@ struct EarlGreyNexysVideo {
         capsules::virtual_uart::UartDevice<'static>,
     >,
     i2c_master: &'static capsules::i2c_master::I2CMasterDriver<'static, lowrisc::i2c::I2c<'static>>,
+    spi_peripheral:
+    &'static capsules::spi_peripheral::SpiPeripheral<'static, lowrisc::spi::SpiDevice>,
     rng: &'static capsules::rng::RngDriver<'static>,
     aes: &'static capsules::symmetric_encryption::aes::AesDriver<
         'static,
@@ -152,6 +154,7 @@ impl SyscallDriverLookup for EarlGreyNexysVideo {
             capsules::alarm::DRIVER_NUM => f(Some(self.alarm)),
             capsules::low_level_debug::DRIVER_NUM => f(Some(self.lldb)),
             capsules::i2c_master::DRIVER_NUM => f(Some(self.i2c_master)),
+            capsules::spi_peripheral::DRIVER_NUM => f(Some(self.spi_peripheral)),
             capsules::rng::DRIVER_NUM => f(Some(self.rng)),
             capsules::symmetric_encryption::aes::DRIVER_NUM => f(Some(self.aes)),
             _ => f(None),
@@ -405,6 +408,15 @@ unsafe fn setup() -> (
 
     peripherals.i2c0.set_master_client(i2c_master);
 
+    //SPI
+    let spi_peripheral = static_init!(
+        capsules::spi_peripheral::SpiPeripheral<'static, lowrisc::spi::SpiDevice>,
+        capsules::spi_peripheral::SpiPeripheral::new(
+            &peripherals.spi_host0,
+            board_kernel.create_grant(capsules::spi_peripheral::DRIVER_NUM, &memory_allocation_cap)
+        )
+    );
+
     peripherals.aes.initialise(
         dynamic_deferred_caller.register(&peripherals.aes).unwrap(), // Unwrap fail = dynamic deferred caller out of slots
     );
@@ -592,6 +604,7 @@ unsafe fn setup() -> (
             rng,
             lldb: lldb,
             i2c_master,
+            spi_peripheral,
             aes,
             syscall_filter,
             scheduler,
