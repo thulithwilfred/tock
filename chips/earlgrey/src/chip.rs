@@ -31,6 +31,7 @@ pub struct EarlGreyDefaultPeripherals<'a> {
     pub otbn: lowrisc::otbn::Otbn<'a>,
     pub gpio_port: crate::gpio::Port<'a>,
     pub i2c0: lowrisc::i2c::I2c<'a>,
+    pub spi_host0: lowrisc::spi::SpiDevice,
     pub flash_ctrl: lowrisc::flash_ctrl::FlashCtrl<'a>,
     pub rng: lowrisc::csrng::CsRng<'a>,
 }
@@ -48,6 +49,7 @@ impl<'a> EarlGreyDefaultPeripherals<'a> {
                 crate::i2c::I2C0_BASE,
                 (1 / CONFIG.cpu_freq) * 1000 * 1000,
             ),
+            spi_host0: lowrisc::spi::SpiDevice::new(crate::spi::SPIHOST0_BASE),
             flash_ctrl: lowrisc::flash_ctrl::FlashCtrl::new(
                 crate::flash_ctrl::FLASH_CTRL_BASE,
                 lowrisc::flash_ctrl::FlashRegion::REGION0,
