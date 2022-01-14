@@ -1,9 +1,10 @@
 //! Serial Peripheral Interface (SPI) Driver
 use core::option::Option;
-//use kernel::debug;
+use kernel::debug;
 use kernel::hil;
 use kernel::hil::spi::{ClockPhase, ClockPolarity};
 use kernel::utilities::cells::OptionalCell;
+use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{
     register_bitfields, register_structs, ReadOnly, ReadWrite, WriteOnly,
 };
@@ -128,14 +129,14 @@ register_bitfields![u32,
 ];
 
 pub struct SpiHost {
-    _registers: StaticRef<SpiHostRegisters>,
+    registers: StaticRef<SpiHostRegisters>,
     _client: OptionalCell<&'static dyn hil::spi::SpiSlaveClient>,
 }
 
 impl SpiHost {
     pub const fn new(base: StaticRef<SpiHostRegisters>) -> Self {
         SpiHost {
-            _registers: base,
+            registers: base,
             _client: OptionalCell::empty(),
         }
     }
@@ -145,20 +146,21 @@ impl SpiHost {
     }
 }
 
-//TODO: SpiMaster (top) hil for Spihost
 impl hil::spi::SpiMaster for SpiHost {
     type ChipSelect = u32;
 
     fn init(&self) -> Result<(), ErrorCode> {
-        unimplemented!();
+        debug!("SPI: Init");
+        Ok(())
     }
 
     fn set_client(&self, _client: &'static dyn hil::spi::SpiMasterClient) {
-        unimplemented!();
+        debug!("SPI: Set Client");
     }
 
     fn is_busy(&self) -> bool {
-        unimplemented!();
+        debug!("SPI: Is Busy");
+        true
     }
 
     fn read_write_bytes(
@@ -167,97 +169,59 @@ impl hil::spi::SpiMaster for SpiHost {
         _read_buffer: Option<&'static mut [u8]>,
         _len: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u8], Option<&'static mut [u8]>)> {
+        debug!("SPI: R/W Bytes");
         unimplemented!();
     }
 
     fn write_byte(&self, _val: u8) -> Result<(), ErrorCode> {
-        unimplemented!();
+        debug!("SPI: Write");
+        Ok(())
     }
 
     fn read_byte(&self) -> Result<u8, ErrorCode> {
-        unimplemented!();
+        debug!("SPI: Read");
+        Ok(0)
     }
 
     fn read_write_byte(&self, _val: u8) -> Result<u8, ErrorCode> {
-        unimplemented!();
+        debug!("SPI: R/W Byte");
+        Ok(8)
     }
 
     fn specify_chip_select(&self, _cs: Self::ChipSelect) -> Result<(), ErrorCode> {
-        unimplemented!();
+        debug!("SPI: CS");
+        Ok(())
     }
 
     fn set_rate(&self, _rate: u32) -> Result<u32, ErrorCode> {
-        unimplemented!();
+        debug!("SPI: Set Rate");
+        Ok(0)
     }
 
     fn get_rate(&self) -> u32 {
-        unimplemented!();
+        let rc = 0;
+        debug!("SPI: Get Rate");
+        rc
     }
 
     fn set_polarity(&self, _polarity: ClockPolarity) -> Result<(), ErrorCode> {
-        unimplemented!();
+        debug!("SPI: Set Polarity");
+        Ok(())     
     }
     fn get_polarity(&self) -> ClockPolarity {
         unimplemented!();
     }
     fn set_phase(&self, _phase: ClockPhase) -> Result<(), ErrorCode> {
-        unimplemented!();
+        debug!("SPI: Set Phase");
+        Ok(()) 
     }
     fn get_phase(&self) -> ClockPhase {
         unimplemented!();
     }
     fn hold_low(&self) {
-        unimplemented!();
+        debug!("SPI: Hold Low");
     }
     fn release_low(&self) {
-        unimplemented!();
-    }
-}
-
-impl hil::spi::SpiMasterDevice for SpiHost {
-    fn set_client(&self, _client: &'static dyn hil::spi::SpiMasterClient) {
-        unimplemented!();
-    }
-
-    fn configure(
-        &self,
-        _cpol: ClockPolarity,
-        _cpal: ClockPhase,
-        _rate: u32,
-    ) -> Result<(), ErrorCode> {
-        unimplemented!();
-    }
-
-    fn read_write_bytes(
-        &self,
-        _write_buffer: &'static mut [u8],
-        _read_buffer: Option<&'static mut [u8]>,
-        _len: usize,
-    ) -> Result<(), (ErrorCode, &'static mut [u8], Option<&'static mut [u8]>)> {
-        unimplemented!();
-    }
-
-    fn set_rate(&self, _rate: u32) -> Result<(), ErrorCode> {
-        unimplemented!();
-    }
-
-    fn get_rate(&self) -> u32 {
-        unimplemented!();
-    }
-
-    fn set_polarity(&self, _polarity: ClockPolarity) -> Result<(), ErrorCode> {
-        unimplemented!();
-    }
-
-    fn get_polarity(&self) -> ClockPolarity {
-        unimplemented!();
-    }
-
-    fn set_phase(&self, _phase: ClockPhase) -> Result<(), ErrorCode> {
-        unimplemented!();
-    }
-
-    fn get_phase(&self) -> ClockPhase {
-        unimplemented!();
+        debug!("SPI: Hold Low");
     }
 }
