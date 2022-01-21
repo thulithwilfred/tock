@@ -129,7 +129,7 @@ struct EarlGreyNexysVideo {
 
     spi_controller: &'static capsules::spi_controller::Spi<
         'static,
-        capsules::virtual_spi::VirtualSpiMasterDevice<'static,lowrisc::spi_host::SpiHost>
+        capsules::virtual_spi::VirtualSpiMasterDevice<'static, lowrisc::spi_host::SpiHost>,
     >,
     rng: &'static capsules::rng::RngDriver<'static>,
     aes: &'static capsules::symmetric_encryption::aes::AesDriver<
@@ -412,19 +412,22 @@ unsafe fn setup() -> (
     peripherals.i2c0.set_master_client(i2c_master);
 
     //SPI
-    let mux_spi = components::spi::SpiMuxComponent::new(&peripherals.spi_host0, dynamic_deferred_caller)
-        .finalize(components::spi_mux_component_helper!(lowrisc::spi_host::SpiHost));
+    let mux_spi =
+        components::spi::SpiMuxComponent::new(&peripherals.spi_host0, dynamic_deferred_caller)
+            .finalize(components::spi_mux_component_helper!(
+                lowrisc::spi_host::SpiHost
+            ));
 
-    let spi_controller = 
-    components::spi::SpiSyscallComponent::new(
+    let spi_controller = components::spi::SpiSyscallComponent::new(
         board_kernel,
         mux_spi,
         //TODO SPI-CS: Figure out actual CS
-        420 as u32,
+        &peripherals.gpio_port[7],
         capsules::spi_controller::DRIVER_NUM,
-    ).finalize(components::spi_syscall_component_helper!(
-        lowrisc::spi_host::SpiHost)
-    );
+    )
+    .finalize(components::spi_syscall_component_helper!(
+        lowrisc::spi_host::SpiHost
+    ));
 
     peripherals.aes.initialise(
         dynamic_deferred_caller.register(&peripherals.aes).unwrap(), // Unwrap fail = dynamic deferred caller out of slots

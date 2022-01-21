@@ -1,10 +1,13 @@
 //! Serial Peripheral Interface (SPI) Driver
+use core::cell::Cell;
+use core::cmp;
 use core::option::Option;
 use kernel::debug;
 use kernel::hil;
 use kernel::hil::spi::{ClockPhase, ClockPolarity};
 use kernel::utilities::cells::OptionalCell;
-use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
+use kernel::utilities::cells::TakeCell;
+use kernel::utilities::registers::interfaces::{Readable, Writeable};
 use kernel::utilities::registers::{
     register_bitfields, register_structs, ReadOnly, ReadWrite, WriteOnly,
 };
@@ -23,7 +26,7 @@ register_structs! {
         //SPI: Alert Test Register
         (0x00c => alert_test: WriteOnly<u32, alert_test::Register>),
         //SPI: Control register
-        (0x010 => control: ReadWrite<u32, ctrl::Register>),
+        (0x010 => ctrl: ReadWrite<u32, ctrl::Register>),
         //SPI: Status register
         (0x014 => status: ReadOnly<u32, status::Register>),
         //SPI: Configuration options register.
@@ -56,7 +59,7 @@ register_bitfields![u32,
     ],
     ctrl [
         RX_WATERMARK OFFSET(0) NUMBITS(8) [],
-        TX_WATERMARK OFFSET(15) NUMBITS(8) [],
+        TX_WATERMARK OFFSET(8) NUMBITS(8) [],
         //28:16 RESERVED
         OUTPUT_EN OFFSET(29) NUMBITS(1) [],
         SW_RST OFFSET(30) NUMBITS(1) [],
@@ -130,98 +133,278 @@ register_bitfields![u32,
 
 pub struct SpiHost {
     registers: StaticRef<SpiHostRegisters>,
-    _client: OptionalCell<&'static dyn hil::spi::SpiSlaveClient>,
+    client: OptionalCell<&'static dyn hil::spi::SpiMasterClient>,
+    chip_select: OptionalCell<&'static dyn hil::gpio::Pin>,
+    initialized: Cell<bool>,
+    busy: Cell<bool>,
+    tx_buf: TakeCell<'static, [u8]>,
+    rx_buf: TakeCell<'static, [u8]>,
+    tx_len: Cell<usize>,
+    rx_len: Cell<usize>,
+    tx_offset: Cell<usize>,
+    rx_offset: Cell<usize>,
 }
 
 impl SpiHost {
     pub const fn new(base: StaticRef<SpiHostRegisters>) -> Self {
         SpiHost {
             registers: base,
-            _client: OptionalCell::empty(),
+            client: OptionalCell::empty(),
+            chip_select: OptionalCell::empty(),
+            initialized: Cell::new(false),
+            busy: Cell::new(false),
+            tx_buf: TakeCell::empty(),
+            rx_buf: TakeCell::empty(),
+            tx_len: Cell::new(0),
+            rx_len: Cell::new(0),
+            tx_offset: Cell::new(0),
+            rx_offset: Cell::new(0),
         }
     }
-    //TODO CB: handle spi interrupts
+    #[inline(never)]
     pub fn handle_interrupt(&self) {
+        let regs = self.registers;
+        let rx_buf = self.rx_buf.take().unwrap();
+        let mut val32: u32;
+        let mut val8: u8;
+        let mut shift_mask;
+        let read_cycles = self.div_up(self.rx_len.get(), 4);
+        //We wrote the entire buffer
+        if self.tx_offset.get() == self.tx_len.get() {
+            for _n in 0..read_cycles {
+                val32 = regs.rx_data.read(rx_data::DATA);
+                shift_mask = 0xFF;
+                for i in 0..4 {
+                    val8 = ((val32 & shift_mask) >> i * 8) as u8;
+                    rx_buf[self.rx_offset.get()] = val8;
+                    self.rx_offset.set(self.rx_offset.get() + 1);
+                    shift_mask = shift_mask << 8;
+                }
+            }
+            self.client.take().unwrap().read_write_done(
+                self.tx_buf.take().unwrap(),
+                Some(rx_buf),
+                self.tx_len.get(),
+                Ok(()),
+            );
+            debug!("TOCK: Transfer Complete");
+        } else {
+            //Theres more to transfer
+            unimplemented!();
+        }
+        self.clear_spi_busy();
+    }
+
+    fn div_up(&self, a: usize, b: usize) -> usize {
+        (a + (b - 1)) / b
+    }
+
+    //To continue r/w from a leftover offset.
+    #[allow(dead_code)]
+    fn tx_continue(&self) {
         unimplemented!();
+    }
+
+    fn set_spi_busy(&self) {
+        self.busy.set(true);
+    }
+
+    #[allow(dead_code)]
+    fn clear_spi_busy(&self) {
+        self.busy.set(false);
+    }
+
+    fn start_transceive(&self, tx_len: u32) {
+        let regs = self.registers;
+        //Direction (3) -> Bidirectional TX/RX
+        regs.command
+            .write(command::LEN.val(tx_len) + command::DIRECTION.val(3));
     }
 }
 
 impl hil::spi::SpiMaster for SpiHost {
-    type ChipSelect = u32;
+    type ChipSelect = &'static dyn hil::gpio::Pin;
 
     fn init(&self) -> Result<(), ErrorCode> {
         debug!("SPI: Init");
+        let regs = self.registers;
+
+        //IP to reset state
+        regs.ctrl.write(ctrl::SW_RST::SET);
+        //Enables the SPI host
+        regs.ctrl.write(ctrl::SPIEN::SET);
+        self.initialized.set(true);
         Ok(())
     }
 
-    fn set_client(&self, _client: &'static dyn hil::spi::SpiMasterClient) {
+    fn set_client(&self, client: &'static dyn hil::spi::SpiMasterClient) {
         debug!("SPI: Set Client");
+        self.client.set(client);
     }
 
     fn is_busy(&self) -> bool {
         debug!("SPI: Is Busy");
-        true
+        self.busy.get()
     }
 
     fn read_write_bytes(
         &self,
-        _write_buffer: &'static mut [u8],
-        _read_buffer: Option<&'static mut [u8]>,
-        _len: usize,
+        tx_buf: &'static mut [u8],
+        rx_buf: Option<&'static mut [u8]>,
+        len: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u8], Option<&'static mut [u8]>)> {
         debug!("SPI: R/W Bytes");
-        unimplemented!();
+        debug_assert!(self.initialized.get());
+        debug_assert!(!self.busy.get());
+        debug_assert!(self.tx_buf.is_none());
+        debug_assert!(self.rx_buf.is_none());
+        let regs = self.registers;
+
+        // Clear (set to low) chip-select
+        if self.chip_select.is_none() {
+            return Err((ErrorCode::NODEVICE, tx_buf, rx_buf));
+        }
+
+        if self.is_busy() || regs.status.is_set(status::TXFULL) {
+            return Err((ErrorCode::BUSY, tx_buf, rx_buf));
+        }
+
+        // Call is ignored, if the pin is not I/O
+        self.chip_select.map(|cs| cs.clear());
+
+        let tx_len: u16 = cmp::min(len, tx_buf.len()) as u16;
+        self.tx_len.set(tx_len as usize);
+        //RX Len is updated at the end based on rx_buf.len()
+        self.rx_len.set(tx_len as usize);
+        let mut tx_offset: u16 = 0;
+        let mut val: u32 = 0;
+        let mut write_cmplt: bool = false;
+
+        //We are committing to the transfer now
+        self.set_spi_busy();
+
+        //We push to TXFIFO until notified that it's full
+        while !regs.status.is_set(status::TXFULL) {
+            for i in 0..4 {
+                //Shift 4 bytes from tx_buf to fifo tx access reg value
+                val = val | ((u32::from(tx_buf[tx_offset as usize]) << i * 8) as u32);
+                tx_offset += 1;
+
+                if tx_offset >= tx_len {
+                    write_cmplt = true;
+                    break;
+                }
+            }
+            //Transfer to FIFO access registers
+            regs.tx_data.write(tx_data::DATA.val(val));
+            val = 0;
+            //We have written all of TX buffer, but TXFIFO is not full
+            if write_cmplt {
+                break;
+            }
+        }
+
+        //Hold rx_buf for reading when tx_cmplt
+        if rx_buf.is_some() {
+            let rx_buf_temp = rx_buf.unwrap();
+            self.rx_len.set(cmp::min(len, rx_buf_temp.len()) as usize);
+            self.rx_buf.replace(rx_buf_temp);
+        }
+        //Hold tx_buf for offset transfer continue
+        self.tx_buf.replace(tx_buf);
+        self.tx_offset.set(tx_offset as usize);
+
+        //Set command register to init transfer
+        self.start_transceive(tx_len as u32);
+        debug!("TOCK: R/W Bytes OK");
+        Ok(())
     }
 
     fn write_byte(&self, _val: u8) -> Result<(), ErrorCode> {
-        debug!("SPI: Write");
-        Ok(())
+        debug_assert!(self.initialized.get());
+        unimplemented!("SPI: Use `read_write_bytes()` instead.");
     }
 
     fn read_byte(&self) -> Result<u8, ErrorCode> {
-        debug!("SPI: Read");
-        Ok(0)
+        debug_assert!(self.initialized.get());
+        unimplemented!("SPI: Use `read_write_bytes()` instead.");
     }
 
     fn read_write_byte(&self, _val: u8) -> Result<u8, ErrorCode> {
-        debug!("SPI: R/W Byte");
-        Ok(8)
+        debug_assert!(self.initialized.get());
+        unimplemented!("SPI: Use `read_write_bytes()` instead.");
     }
 
-    fn specify_chip_select(&self, _cs: Self::ChipSelect) -> Result<(), ErrorCode> {
-        debug!("SPI: CS");
+    fn specify_chip_select(&self, cs: Self::ChipSelect) -> Result<(), ErrorCode> {
+        debug_assert!(self.initialized.get());
+        cs.make_output();
+        cs.set();
+        self.chip_select.set(cs);
         Ok(())
     }
 
-    fn set_rate(&self, _rate: u32) -> Result<u32, ErrorCode> {
-        debug!("SPI: Set Rate");
-        Ok(0)
+    fn set_rate(&self, rate: u32) -> Result<u32, ErrorCode> {
+        //unimplemented!("SPI: Set Rate {:?}", _rate);
+        debug_assert!(self.initialized.get());
+        Ok(rate)
     }
 
     fn get_rate(&self) -> u32 {
-        let rc = 0;
-        debug!("SPI: Get Rate");
-        rc
+        debug_assert!(self.initialized.get());
+        let _rc = 0;
+        unimplemented!("SPI: Get Rate");
     }
 
-    fn set_polarity(&self, _polarity: ClockPolarity) -> Result<(), ErrorCode> {
-        debug!("SPI: Set Polarity");
-        Ok(())     
+    fn set_polarity(&self, polarity: ClockPolarity) -> Result<(), ErrorCode> {
+        debug_assert!(self.initialized.get());
+        let regs = self.registers;
+
+        match polarity {
+            ClockPolarity::IdleLow => regs.config_opts.write(conf_opts::CPOL_0::CLEAR),
+            ClockPolarity::IdleHigh => regs.config_opts.write(conf_opts::CPOL_0::SET),
+        };
+        Ok(())
     }
+
     fn get_polarity(&self) -> ClockPolarity {
-        unimplemented!();
+        debug_assert!(self.initialized.get());
+        let regs = self.registers;
+
+        match regs.config_opts.read(conf_opts::CPOL_0) {
+            0 => ClockPolarity::IdleLow,
+            1 => ClockPolarity::IdleHigh,
+            _ => unreachable!(),
+        }
     }
-    fn set_phase(&self, _phase: ClockPhase) -> Result<(), ErrorCode> {
-        debug!("SPI: Set Phase");
-        Ok(()) 
+
+    fn set_phase(&self, phase: ClockPhase) -> Result<(), ErrorCode> {
+        debug_assert!(self.initialized.get());
+        let regs = self.registers;
+
+        match phase {
+            ClockPhase::SampleLeading => regs.config_opts.write(conf_opts::CPHA_0::CLEAR),
+            ClockPhase::SampleTrailing => regs.config_opts.write(conf_opts::CPHA_0::SET),
+        };
+        Ok(())
     }
+
     fn get_phase(&self) -> ClockPhase {
-        unimplemented!();
+        debug_assert!(self.initialized.get());
+        let regs = self.registers;
+
+        match regs.config_opts.read(conf_opts::CPHA_0) {
+            1 => ClockPhase::SampleTrailing,
+            0 => ClockPhase::SampleTrailing,
+            _ => unreachable!(),
+        };
+        unimplemented!("SPI: Get Phase");
     }
+
     fn hold_low(&self) {
-        debug!("SPI: Hold Low");
+        unimplemented!("SPI: Hold Low");
     }
+
     fn release_low(&self) {
-        debug!("SPI: Hold Low");
+        unimplemented!("SPI: Hold Low");
     }
 }

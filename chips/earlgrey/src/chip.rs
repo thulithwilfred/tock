@@ -88,7 +88,6 @@ impl<'a> InterruptService<()> for EarlGreyDefaultPeripherals<'a> {
             interrupts::CSRNG_CSCMDREQDONE..=interrupts::CSRNG_CSFATALERR => {
                 self.rng.handle_interrupt()
             }
-            //TODO SPI: add interrupt
             interrupts::SPI_HOST0ERROR..=interrupts::SPI_HOST0SPIEVENT => {
                 self.spi_host0.handle_interrupt()
             }
