@@ -4,10 +4,11 @@ use core::cmp;
 use core::option::Option;
 use kernel::debug;
 use kernel::hil;
+use kernel::hil::spi::SpiMaster;
 use kernel::hil::spi::{ClockPhase, ClockPolarity};
 use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::cells::TakeCell;
-use kernel::utilities::registers::interfaces::{Readable, Writeable};
+use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{
     register_bitfields, register_structs, ReadOnly, ReadWrite, WriteOnly,
 };
@@ -161,26 +162,113 @@ impl SpiHost {
             rx_offset: Cell::new(0),
         }
     }
+
     #[inline(never)]
     pub fn handle_interrupt(&self) {
+        let regs = self.registers;
+        let irq = regs.intr_state.extract();
+        let mut is_test;
+
+        if irq.is_set(intr::ERROR) {
+            debug!("[TOCK_ERR: Error Interrupt Set]");
+            let err_status = regs.err_status.extract();
+            is_test = true;
+            self.clear_err_interrupt();
+            if err_status.is_set(err_status::CMDBUSY) {
+                is_test = false;
+                debug!("TOCK_ERR: CMDBUSY")
+                //unimplemented!();
+            }
+            if err_status.is_set(err_status::OVERFLOW) {
+                is_test = false;
+                unimplemented!();
+            }
+            if err_status.is_set(err_status::UNDERFLOW) {
+                is_test = false;
+                unimplemented!();
+            }
+            if err_status.is_set(err_status::CMDINVAL) {
+                is_test = false;
+                unimplemented!();
+            }
+            if err_status.is_set(err_status::CSIDINVAL) {
+                is_test = false;
+                unimplemented!();
+            }
+            if err_status.is_set(err_status::ACCESSINVAL) {
+                is_test = false;
+                unimplemented!();
+            }
+            if is_test {
+                self.clear_tests();
+                debug!("TOCK_ERR: Test Error Interrupt");
+            }
+        }
+        if irq.is_set(intr::SPI_EVENT) {
+            debug!("[TOCK_EV: Event Interrupt Set]");
+            self.clear_event_interrupt();
+            let status = regs.status.extract();
+            is_test = true;
+
+            if status.is_set(status::RXFULL) {
+                is_test = false;
+                unimplemented!();
+            }
+            //This could be set at init, so only follow through
+            //once a transfer has started (is_busy())
+            if status.is_set(status::TXEMPTY) && self.is_busy() {
+                debug!("TOCK_EV: IRQ TX Empty");
+                is_test = false;
+                self.continue_transfer();
+            }
+            if status.is_set(status::RXWM) {
+                is_test = false;
+                unimplemented!();
+            }
+            if status.is_set(status::TXWM) {
+                is_test = false;
+                unimplemented!();
+            }
+            if status.is_set(status::READY) {
+                is_test = false;
+                debug!("TOCK_EV: IRQ READY");
+                //unimplemented!();
+            }
+            if status.is_set(status::ACTIVE) {
+                is_test = false;
+                unimplemented!();
+            }
+            if is_test {
+                self.clear_tests();
+                debug!("TOCK_EV: Test Event Interrupt");
+            }
+        }
+    }
+
+    //Determine if transfer complete or if we need to keep
+    //writing from an offset.
+    fn continue_transfer(&self) {
         let regs = self.registers;
         let rx_buf = self.rx_buf.take().unwrap();
         let mut val32: u32;
         let mut val8: u8;
         let mut shift_mask;
-        let read_cycles = self.div_up(self.rx_len.get(), 4);
-        //We wrote the entire buffer
-        if self.tx_offset.get() == self.tx_len.get() {
-            for _n in 0..read_cycles {
-                val32 = regs.rx_data.read(rx_data::DATA);
-                shift_mask = 0xFF;
-                for i in 0..4 {
-                    val8 = ((val32 & shift_mask) >> i * 8) as u8;
-                    rx_buf[self.rx_offset.get()] = val8;
-                    self.rx_offset.set(self.rx_offset.get() + 1);
-                    shift_mask = shift_mask << 8;
-                }
+        let read_cycles = self.div_up(self.rx_len.get() - self.rx_offset.get(), 4);
+        //Receive rx_data
+        for _n in 0..read_cycles {
+            val32 = regs.rx_data.read(rx_data::DATA);
+            shift_mask = 0xFF;
+            for i in 0..4 {
+                //TODO: Code here can be optimized
+                val8 = ((val32 & shift_mask) >> i * 8) as u8;
+                debug!("READ {}", val8);
+                rx_buf[self.rx_offset.get()] = val8;
+                self.rx_offset.set(self.rx_offset.get() + 1);
+                shift_mask = shift_mask << 8;
             }
+        }
+        //Transfer was complete */
+        if self.tx_offset.get() == self.tx_len.get() {
             self.client.take().unwrap().read_write_done(
                 self.tx_buf.take().unwrap(),
                 Some(rx_buf),
@@ -188,30 +276,55 @@ impl SpiHost {
                 Ok(()),
             );
             debug!("TOCK: Transfer Complete");
+            self.reset_internal_state();
         } else {
-            //Theres more to transfer
-            unimplemented!();
+            debug!("TOCK: Continue Transfer");
+            //self.rx_buf.replace(rx_buf);
+            //Theres more to transfer, continue writing from the offset
+            //self.spi_transfer_progress();
         }
-        self.clear_spi_busy();
     }
 
-    fn div_up(&self, a: usize, b: usize) -> usize {
-        (a + (b - 1)) / b
+    fn spi_transfer_progress(&self) {
+        let tx_len = self.tx_len.get();
+        let tx_buf = self.tx_buf.take().unwrap();
+        let mut tx_offset = self.tx_offset.get();
+        let tx_offset_start = tx_offset;
+        let regs = self.registers;
+        let mut val: u32 = 0;
+        let mut write_cmplt: bool = false;
+
+        while !regs.status.is_set(status::TXFULL) {
+            for i in 0..4 {
+                //Shift 4 bytes from tx_buf to fifo tx access reg value
+                val = val | ((u32::from(tx_buf[tx_offset as usize]) << i * 8) as u32);
+                tx_offset += 1;
+
+                if tx_offset >= tx_len {
+                    write_cmplt = true;
+                    break;
+                }
+            }
+            //Transfer to FIFO access registers
+            regs.tx_data.write(tx_data::DATA.val(val));
+            val = 0;
+            //We have written all of TX buffer, but TXFIFO is not full
+            if write_cmplt {
+                break;
+            }
+        }
+        //Hold tx_buf for offset transfer continue
+        self.tx_buf.replace(tx_buf);
+        self.tx_offset.set(tx_offset as usize);
+        //Wait for status ready to be set before continuing
+        while !regs.status.is_set(status::READY) {}
+        //Set command register to init transfer
+        self.start_transceive((tx_offset - tx_offset_start) as u32);
+        debug!("TOCK: Transfer Continue OK {}", tx_offset - tx_offset_start);
     }
 
-    //To continue r/w from a leftover offset.
-    #[allow(dead_code)]
-    fn tx_continue(&self) {
-        unimplemented!();
-    }
-
-    fn set_spi_busy(&self) {
-        self.busy.set(true);
-    }
-
-    #[allow(dead_code)]
-    fn clear_spi_busy(&self) {
-        self.busy.set(false);
+    fn min_of_three(&self, i: usize, j: usize, k: usize) -> usize {
+        cmp::min(i, cmp::min(j, k))
     }
 
     fn start_transceive(&self, tx_len: u32) {
@@ -219,6 +332,114 @@ impl SpiHost {
         //Direction (3) -> Bidirectional TX/RX
         regs.command
             .write(command::LEN.val(tx_len) + command::DIRECTION.val(3));
+    }
+
+    fn reset_internal_state(&self) {
+        self.clear_spi_busy();
+        self.tx_len.set(0);
+        self.rx_len.set(0);
+        self.tx_offset.set(0);
+        self.rx_offset.set(0);
+
+        debug_assert!(self.tx_buf.is_none());
+        debug_assert!(self.rx_buf.is_none());
+    }
+
+    fn enable_spi_host(&self) {
+        let regs = self.registers;
+        //Enables the SPI host
+        regs.ctrl.modify(ctrl::SPIEN::SET);
+    }
+
+    fn reset_spi_ip(&self) {
+        let regs = self.registers;
+        //IP to reset state
+        regs.ctrl.modify(ctrl::SW_RST::SET);
+    }
+
+    #[allow(dead_code)]
+    fn enable_err_interrupt(&self) {
+        let regs = self.registers;
+        regs.intr_enable.modify(intr::ERROR::SET);
+    }
+
+    #[allow(dead_code)]
+    fn enable_event_interrupt(&self) {
+        let regs = self.registers;
+        regs.intr_enable.modify(intr::SPI_EVENT::SET);
+    }
+
+    #[allow(dead_code)]
+    fn disable_err_interrupt(&self) {
+        let regs = self.registers;
+        regs.intr_enable.write(intr::ERROR::CLEAR);
+    }
+    #[allow(dead_code)]
+    fn disable_event_interrupt(&self) {
+        let regs = self.registers;
+        regs.intr_enable.modify(intr::SPI_EVENT::CLEAR);
+    }
+
+    fn enable_interrupts(&self) {
+        let regs = self.registers;
+        regs.intr_enable
+            .modify(intr::ERROR::SET + intr::SPI_EVENT::SET);
+    }
+    #[allow(dead_code)]
+    fn disable_interrupts(&self) {
+        let regs = self.registers;
+        regs.intr_enable
+            .modify(intr::ERROR::CLEAR + intr::SPI_EVENT::CLEAR);
+    }
+
+    fn clear_err_interrupt(&self) {
+        let regs = self.registers;
+        regs.intr_state.modify(intr::ERROR::CLEAR);
+    }
+
+    fn clear_event_interrupt(&self) {
+        let regs = self.registers;
+        regs.intr_state.modify(intr::SPI_EVENT::CLEAR);
+    }
+
+    fn test_error_interrupt(&self) {
+        let regs = self.registers;
+        regs.intr_test.write(intr::ERROR::SET);
+    }
+
+    fn clear_tests(&self) {
+        let regs = self.registers;
+        regs.intr_test
+            .write(intr::ERROR::CLEAR + intr::SPI_EVENT::CLEAR);
+    }
+
+    fn test_event_interrupt(&self) {
+        let regs = self.registers;
+        regs.intr_test.write(intr::SPI_EVENT::SET);
+    }
+
+    fn event_enable(&self) {
+        let regs = self.registers;
+        //regs.event_en.modify(event_en::READY::SET);
+        regs.event_en.modify(event_en::TXEMPTY::SET);
+    }
+
+    fn err_enable(&self) {
+        let regs = self.registers;
+        regs.err_en.modify(err_en::CMDBUSY::SET);
+    }
+
+    fn set_spi_busy(&self) {
+        self.busy.set(true);
+    }
+
+    fn clear_spi_busy(&self) {
+        self.busy.set(false);
+    }
+
+    //Divide a/b and return a value rounded up
+    fn div_up(&self, a: usize, b: usize) -> usize {
+        (a + (b - 1)) / b
     }
 }
 
@@ -229,11 +450,15 @@ impl hil::spi::SpiMaster for SpiHost {
         debug!("SPI: Init");
         let regs = self.registers;
 
-        //IP to reset state
-        regs.ctrl.write(ctrl::SW_RST::SET);
-        //Enables the SPI host
-        regs.ctrl.write(ctrl::SPIEN::SET);
+        self.reset_spi_ip();
+        self.enable_spi_host();
+        self.event_enable();
+        self.err_enable();
         self.initialized.set(true);
+
+        self.enable_interrupts();
+        //self.test_error_interrupt();
+        //self.test_event_interrupt();
         Ok(())
     }
 
@@ -306,33 +531,43 @@ impl hil::spi::SpiMaster for SpiHost {
 
         //Hold rx_buf for reading when tx_cmplt
         if rx_buf.is_some() {
-            let rx_buf_temp = rx_buf.unwrap();
-            self.rx_len.set(cmp::min(len, rx_buf_temp.len()) as usize);
-            self.rx_buf.replace(rx_buf_temp);
+            let rx_buf_t = rx_buf.unwrap();
+            self.rx_len
+                .set(cmp::min(tx_len as usize, rx_buf_t.len()) as usize);
+            //Can only receive as buffer allows or transfer len
+            // self.rx_len
+            //     .set(self.min_of_three(len, tx_offset as usize - 4, rx_buf_t.len()));
+            self.rx_buf.replace(rx_buf_t);
         }
         //Hold tx_buf for offset transfer continue
         self.tx_buf.replace(tx_buf);
         self.tx_offset.set(tx_offset as usize);
 
+        //Wait for status ready to be set before continuing
+        while !regs.status.is_set(status::READY) {}
+
         //Set command register to init transfer
-        self.start_transceive(tx_len as u32);
+        self.start_transceive(self.tx_offset.get() as u32);
         debug!("TOCK: R/W Bytes OK");
         Ok(())
     }
 
     fn write_byte(&self, _val: u8) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
-        unimplemented!("SPI: Use `read_write_bytes()` instead.");
+        //Use `read_write_bytes()` instead.
+        return Err(ErrorCode::NODEVICE);
     }
 
     fn read_byte(&self) -> Result<u8, ErrorCode> {
         debug_assert!(self.initialized.get());
-        unimplemented!("SPI: Use `read_write_bytes()` instead.");
+        //Use `read_write_bytes()` instead.
+        return Err(ErrorCode::NODEVICE);
     }
 
-    fn read_write_byte(&self, _val: u8) -> Result<u8, ErrorCode> {
+    fn read_write_byte(&self, val: u8) -> Result<u8, ErrorCode> {
         debug_assert!(self.initialized.get());
-        unimplemented!("SPI: Use `read_write_bytes()` instead.");
+        //Use `read_write_bytes()` instead.
+        return Err(ErrorCode::NODEVICE);
     }
 
     fn specify_chip_select(&self, cs: Self::ChipSelect) -> Result<(), ErrorCode> {

@@ -13,6 +13,7 @@ use crate::chip_config::CONFIG;
 use crate::interrupts;
 use crate::plic::Plic;
 use crate::plic::PLIC;
+use kernel::debug;
 
 pub struct EarlGrey<'a, I: InterruptService<()> + 'a> {
     userspace_kernel_boundary: SysCall,
@@ -89,6 +90,7 @@ impl<'a> InterruptService<()> for EarlGreyDefaultPeripherals<'a> {
                 self.rng.handle_interrupt()
             }
             interrupts::SPI_HOST0ERROR..=interrupts::SPI_HOST0SPIEVENT => {
+                debug!("TOCK: Interrupt Line # {}", interrupt);
                 self.spi_host0.handle_interrupt()
             }
             interrupts::SPI_HOST1ERROR..=interrupts::SPI_HOST1SPIEVENT => {
