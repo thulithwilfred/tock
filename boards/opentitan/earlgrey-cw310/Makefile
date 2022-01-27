@@ -6,7 +6,8 @@ PLATFORM=earlgrey-cw310
 FLASHID=--dev-id="0403:6010"
 RISC_PREFIX ?= riscv64-elf
 QEMU ?= ../../../tools/qemu/build/qemu-system-riscv32
-
+#Point to an external mainline build of qemu
+EXT_QEMU ?= ../../../../qemu/build/qemu-system-riscv32
 
 include ../../Makefile.common
 
@@ -34,6 +35,12 @@ qemu-gdb: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
 qemu-app: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
 	$(call check_defined, OPENTITAN_BOOT_ROM)
 	$(QEMU) -M opentitan -kernel $^ -bios $(OPENTITAN_BOOT_ROM) -device loader,file=$(APP),addr=0x20030000 -nographic -serial mon:stdio
+
+
+ext-qemu-app: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
+	$(call check_defined, OPENTITAN_BOOT_ROM)
+	$(EXT_QEMU) -M opentitan -kernel $^ -bios $(OPENTITAN_BOOT_ROM) -device loader,file=$(APP),addr=0x20030000 -nographic -serial mon:stdio
+
 
 qemu-app-gdb : $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
 	$(call check_defined, OPENTITAN_BOOT_ROM)
