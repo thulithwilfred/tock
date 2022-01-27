@@ -286,6 +286,7 @@ impl SpiHost {
         }
     }
 
+    /// Continue SPI transfer from offset point
     fn spi_transfer_progress(&self) {
         let tx_buf = self.tx_buf.take().unwrap();
         let tx_offset_start = self.tx_offset.get();
@@ -301,7 +302,6 @@ impl SpiHost {
                 break;
             }
         }
-
         //Last byte was rejected
         if regs.status.is_set(status::TXFULL) && (self.tx_offset.get() <= self.tx_len.get()) {
             self.tx_offset.set(self.tx_offset.get() - 1);
@@ -318,6 +318,8 @@ impl SpiHost {
         );
     }
 
+    /// Issue a command to start SPI transaction
+    /// Currently on Bi-Directional transactions are supported
     fn start_transceive(&self, tx_len: u32) {
         let regs = self.registers;
         //Direction (3) -> Bidirectional TX/RX
@@ -325,6 +327,8 @@ impl SpiHost {
             .write(command::LEN.val(tx_len) + command::DIRECTION.val(3));
     }
 
+    /// Reset the soft internal state, should be called once
+    /// a spi transaction has been completed. 
     fn reset_internal_state(&self) {
         self.clear_spi_busy();
         self.tx_len.set(0);
@@ -336,12 +340,14 @@ impl SpiHost {
         debug_assert!(self.rx_buf.is_none());
     }
 
+    /// Enable SPI_HOST IP
     fn enable_spi_host(&self) {
         let regs = self.registers;
         //Enables the SPI host
         regs.ctrl.modify(ctrl::SPIEN::SET);
     }
 
+    /// Reset SPI Host
     fn reset_spi_ip(&self) {
         let regs = self.registers;
         //IP to reset state
@@ -371,44 +377,52 @@ impl SpiHost {
         regs.intr_enable.modify(intr::SPI_EVENT::CLEAR);
     }
 
+    /// Enable both event/err IRQ
     fn enable_interrupts(&self) {
         let regs = self.registers;
         regs.intr_enable
             .modify(intr::ERROR::SET + intr::SPI_EVENT::SET);
     }
-    #[allow(dead_code)]
+
+    /// Disable both event/err IRQ
     fn disable_interrupts(&self) {
         let regs = self.registers;
         regs.intr_enable
             .modify(intr::ERROR::CLEAR + intr::SPI_EVENT::CLEAR);
     }
 
+    /// Clear the error IRQ
     fn clear_err_interrupt(&self) {
         let regs = self.registers;
         regs.intr_state.modify(intr::ERROR::CLEAR);
     }
 
+    /// Clear the event IRQ
     fn clear_event_interrupt(&self) {
         let regs = self.registers;
         regs.intr_state.modify(intr::SPI_EVENT::CLEAR);
     }
-
+    /// Will generate a `test` interrupt on the error irq
+    #[allow(dead_code)]
     fn test_error_interrupt(&self) {
         let regs = self.registers;
         regs.intr_test.write(intr::ERROR::SET);
     }
-
+    /// Clear test interrupts
     fn clear_tests(&self) {
         let regs = self.registers;
         regs.intr_test
             .write(intr::ERROR::CLEAR + intr::SPI_EVENT::CLEAR);
     }
-
+    
+    /// Will generate a `test` interrupt on the event irq
+    #[allow(dead_code)]
     fn test_event_interrupt(&self) {
         let regs = self.registers;
         regs.intr_test.write(intr::SPI_EVENT::SET);
     }
 
+    /// Enable required `event interrupts`
     fn event_enable(&self) {
         let regs = self.registers;
         //regs.event_en.modify(event_en::READY::SET);
@@ -420,16 +434,20 @@ impl SpiHost {
         regs.event_en.modify(event_en::TXEMPTY::CLEAR);
     }
 
+    /// Enable the event interrupt and enable TXEMPTY 
+    /// TXEMPTY will call back once the TXFIFO has been drained
     fn enable_tx_interrupt(&self) {
         let regs = self.registers;
         regs.intr_enable.modify(intr::SPI_EVENT::SET);
         regs.event_en.modify(event_en::TXEMPTY::SET);
     }
 
+    /// Enable required error interrupts
     fn err_enable(&self) {
         let regs = self.registers;
         regs.err_en.modify(err_en::CMDBUSY::SET);
     }
+
 
     fn set_spi_busy(&self) {
         self.busy.set(true);
@@ -439,7 +457,8 @@ impl SpiHost {
         self.busy.set(false);
     }
 
-    //Divide a/b and return a value rounded up
+    /// Divide a/b and return a value always rounded
+    /// up to the nearest integer
     fn div_up(&self, a: usize, b: usize) -> usize {
         (a + (b - 1)) / b
     }
@@ -459,8 +478,8 @@ impl hil::spi::SpiMaster for SpiHost {
         self.initialized.set(true);
 
         self.enable_interrupts();
-        self.test_error_interrupt();
-        self.test_event_interrupt();
+        //self.test_error_interrupt();
+        //self.test_event_interrupt();
         Ok(())
     }
 
