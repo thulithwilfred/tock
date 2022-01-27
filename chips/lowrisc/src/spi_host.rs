@@ -105,7 +105,7 @@ register_bitfields![u32,
         DATA OFFSET(0) NUMBITS(32) [],
     ],
     tx_data [
-        DATA OFFSET(0) NUMBITS(32) [],
+        DATA OFFSET(0) NUMBITS(8) [],
     ],
     err_en [
         CMDBUSY OFFSET(0) NUMBITS(1) [],
@@ -168,12 +168,11 @@ impl SpiHost {
         let regs = self.registers;
         let irq = regs.intr_state.extract();
         let mut is_test;
-
+        self.disable_interrupts();
         if irq.is_set(intr::ERROR) {
             debug!("[TOCK_ERR: Error Interrupt Set]");
             let err_status = regs.err_status.extract();
             is_test = true;
-            self.clear_err_interrupt();
             if err_status.is_set(err_status::CMDBUSY) {
                 is_test = false;
                 debug!("TOCK_ERR: CMDBUSY")
@@ -203,13 +202,14 @@ impl SpiHost {
                 self.clear_tests();
                 debug!("TOCK_ERR: Test Error Interrupt");
             }
+            //Specified to be cleared, after err_status is cleared.
+            self.clear_err_interrupt();
         }
         if irq.is_set(intr::SPI_EVENT) {
             debug!("[TOCK_EV: Event Interrupt Set]");
-            self.clear_event_interrupt();
             let status = regs.status.extract();
             is_test = true;
-
+            self.clear_event_interrupt();
             if status.is_set(status::RXFULL) {
                 is_test = false;
                 unimplemented!();
@@ -219,6 +219,7 @@ impl SpiHost {
             if status.is_set(status::TXEMPTY) && self.is_busy() {
                 debug!("TOCK_EV: IRQ TX Empty");
                 is_test = false;
+                self.enable_tx_interrupt();
                 self.continue_transfer();
             }
             if status.is_set(status::RXWM) {
@@ -243,6 +244,7 @@ impl SpiHost {
                 debug!("TOCK_EV: Test Event Interrupt");
             }
         }
+        self.enable_interrupts();
     }
 
     //Determine if transfer complete or if we need to keep
@@ -253,15 +255,14 @@ impl SpiHost {
         let mut val32: u32;
         let mut val8: u8;
         let mut shift_mask;
-        let read_cycles = self.div_up(self.rx_len.get() - self.rx_offset.get(), 4);
-        //Receive rx_data
+        let rx_len = self.tx_offset.get() - self.rx_offset.get();
+        let read_cycles = self.div_up(rx_len, 4);
+        //Receive rx_data (Only 4byte reads are supported)
         for _n in 0..read_cycles {
             val32 = regs.rx_data.read(rx_data::DATA);
             shift_mask = 0xFF;
             for i in 0..4 {
-                //TODO: Code here can be optimized
                 val8 = ((val32 & shift_mask) >> i * 8) as u8;
-                debug!("READ {}", val8);
                 rx_buf[self.rx_offset.get()] = val8;
                 self.rx_offset.set(self.rx_offset.get() + 1);
                 shift_mask = shift_mask << 8;
@@ -279,52 +280,42 @@ impl SpiHost {
             self.reset_internal_state();
         } else {
             debug!("TOCK: Continue Transfer");
-            //self.rx_buf.replace(rx_buf);
+            self.rx_buf.replace(rx_buf);
             //Theres more to transfer, continue writing from the offset
-            //self.spi_transfer_progress();
+            self.spi_transfer_progress();
         }
     }
 
     fn spi_transfer_progress(&self) {
-        let tx_len = self.tx_len.get();
         let tx_buf = self.tx_buf.take().unwrap();
-        let mut tx_offset = self.tx_offset.get();
-        let tx_offset_start = tx_offset;
+        let tx_offset_start = self.tx_offset.get();
         let regs = self.registers;
-        let mut val: u32 = 0;
-        let mut write_cmplt: bool = false;
+        let mut t_byte: u32;
 
         while !regs.status.is_set(status::TXFULL) {
-            for i in 0..4 {
-                //Shift 4 bytes from tx_buf to fifo tx access reg value
-                val = val | ((u32::from(tx_buf[tx_offset as usize]) << i * 8) as u32);
-                tx_offset += 1;
-
-                if tx_offset >= tx_len {
-                    write_cmplt = true;
-                    break;
-                }
-            }
-            //Transfer to FIFO access registers
-            regs.tx_data.write(tx_data::DATA.val(val));
-            val = 0;
-            //We have written all of TX buffer, but TXFIFO is not full
-            if write_cmplt {
+            t_byte = tx_buf[self.tx_offset.get()].into();
+            regs.tx_data.write(tx_data::DATA.val(t_byte));
+            self.tx_offset.set(self.tx_offset.get() + 1);
+            //Transfer Completed
+            if self.tx_offset.get() >= self.tx_len.get() {
                 break;
             }
         }
+
+        //Last byte was rejected
+        if regs.status.is_set(status::TXFULL) && (self.tx_offset.get() <= self.tx_len.get()) {
+            self.tx_offset.set(self.tx_offset.get() - 1);
+        }
         //Hold tx_buf for offset transfer continue
         self.tx_buf.replace(tx_buf);
-        self.tx_offset.set(tx_offset as usize);
         //Wait for status ready to be set before continuing
         while !regs.status.is_set(status::READY) {}
         //Set command register to init transfer
-        self.start_transceive((tx_offset - tx_offset_start) as u32);
-        debug!("TOCK: Transfer Continue OK {}", tx_offset - tx_offset_start);
-    }
-
-    fn min_of_three(&self, i: usize, j: usize, k: usize) -> usize {
-        cmp::min(i, cmp::min(j, k))
+        self.start_transceive((self.tx_offset.get() - tx_offset_start) as u32);
+        debug!(
+            "TOCK: Transfer Continue OK {}",
+            (self.tx_offset.get() - tx_offset_start)
+        );
     }
 
     fn start_transceive(&self, tx_len: u32) {
@@ -423,6 +414,17 @@ impl SpiHost {
         //regs.event_en.modify(event_en::READY::SET);
         regs.event_en.modify(event_en::TXEMPTY::SET);
     }
+    #[allow(dead_code)]
+    fn disable_tx_interrupt(&self) {
+        let regs = self.registers;
+        regs.event_en.modify(event_en::TXEMPTY::CLEAR);
+    }
+
+    fn enable_tx_interrupt(&self) {
+        let regs = self.registers;
+        regs.intr_enable.modify(intr::SPI_EVENT::SET);
+        regs.event_en.modify(event_en::TXEMPTY::SET);
+    }
 
     fn err_enable(&self) {
         let regs = self.registers;
@@ -457,8 +459,8 @@ impl hil::spi::SpiMaster for SpiHost {
         self.initialized.set(true);
 
         self.enable_interrupts();
-        //self.test_error_interrupt();
-        //self.test_event_interrupt();
+        self.test_error_interrupt();
+        self.test_event_interrupt();
         Ok(())
     }
 
@@ -496,52 +498,37 @@ impl hil::spi::SpiMaster for SpiHost {
 
         // Call is ignored, if the pin is not I/O
         self.chip_select.map(|cs| cs.clear());
+        self.tx_len.set(cmp::min(len, tx_buf.len()));
 
-        let tx_len: u16 = cmp::min(len, tx_buf.len()) as u16;
-        self.tx_len.set(tx_len as usize);
-        //RX Len is updated at the end based on rx_buf.len()
-        self.rx_len.set(tx_len as usize);
-        let mut tx_offset: u16 = 0;
-        let mut val: u32 = 0;
-        let mut write_cmplt: bool = false;
-
+        let mut t_byte: u32;
         //We are committing to the transfer now
         self.set_spi_busy();
 
-        //We push to TXFIFO until notified that it's full
         while !regs.status.is_set(status::TXFULL) {
-            for i in 0..4 {
-                //Shift 4 bytes from tx_buf to fifo tx access reg value
-                val = val | ((u32::from(tx_buf[tx_offset as usize]) << i * 8) as u32);
-                tx_offset += 1;
-
-                if tx_offset >= tx_len {
-                    write_cmplt = true;
-                    break;
-                }
-            }
-            //Transfer to FIFO access registers
-            regs.tx_data.write(tx_data::DATA.val(val));
-            val = 0;
-            //We have written all of TX buffer, but TXFIFO is not full
-            if write_cmplt {
+            t_byte = tx_buf[self.tx_offset.get()].into();
+            regs.tx_data.write(tx_data::DATA.val(t_byte));
+            //Transfer Complete in one-shot
+            if self.tx_offset.get() >= self.tx_len.get() {
                 break;
             }
+            self.tx_offset.set(self.tx_offset.get() + 1);
         }
 
-        //Hold rx_buf for reading when tx_cmplt
+        //Last byte was rejected
+        if regs.status.is_set(status::TXFULL) && (self.tx_offset.get() <= self.tx_len.get()) {
+            self.tx_offset.set(self.tx_offset.get() - 1);
+        }
+
+        //Hold tx_buf for offset transfer continue
+        self.tx_buf.replace(tx_buf);
+
+        //Hold rx_buf for later
         if rx_buf.is_some() {
             let rx_buf_t = rx_buf.unwrap();
             self.rx_len
-                .set(cmp::min(tx_len as usize, rx_buf_t.len()) as usize);
-            //Can only receive as buffer allows or transfer len
-            // self.rx_len
-            //     .set(self.min_of_three(len, tx_offset as usize - 4, rx_buf_t.len()));
+                .set(cmp::min(self.tx_len.get() as usize, rx_buf_t.len()) as usize);
             self.rx_buf.replace(rx_buf_t);
         }
-        //Hold tx_buf for offset transfer continue
-        self.tx_buf.replace(tx_buf);
-        self.tx_offset.set(tx_offset as usize);
 
         //Wait for status ready to be set before continuing
         while !regs.status.is_set(status::READY) {}
