@@ -270,12 +270,15 @@ impl SpiHost {
         }
         //Transfer was complete */
         if self.tx_offset.get() == self.tx_len.get() {
-            self.client.take().unwrap().read_write_done(
-                self.tx_buf.take().unwrap(),
-                Some(rx_buf),
-                self.tx_len.get(),
-                Ok(()),
-            );
+            self.client.map(|client| match self.tx_buf.take() {
+                None => (),
+                Some(tx_buf) => client.read_write_done(
+                    tx_buf,
+                    Some(rx_buf),
+                    self.tx_len.get(),
+                    Ok(()),
+                ),
+            });
             debug!("TOCK: Transfer Complete");
             self.reset_internal_state();
         } else {
