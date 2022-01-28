@@ -175,27 +175,32 @@ impl SpiHost {
             is_test = true;
             if err_status.is_set(err_status::CMDBUSY) {
                 is_test = false;
+                regs.err_status.modify(err_status::CMDBUSY::CLEAR);
                 debug!("TOCK_ERR: CMDBUSY")
-                //unimplemented!();
             }
             if err_status.is_set(err_status::OVERFLOW) {
-                is_test = false;
+                //is_test = false;
+                regs.err_status.modify(err_status::OVERFLOW::CLEAR);
                 unimplemented!();
             }
             if err_status.is_set(err_status::UNDERFLOW) {
-                is_test = false;
+                //is_test = false;
+                regs.err_status.modify(err_status::UNDERFLOW::CLEAR);
                 unimplemented!();
             }
             if err_status.is_set(err_status::CMDINVAL) {
-                is_test = false;
+                //is_test = false;
+                regs.err_status.modify(err_status::CMDINVAL::CLEAR);
                 unimplemented!();
             }
             if err_status.is_set(err_status::CSIDINVAL) {
-                is_test = false;
+                //is_test = false;
+                regs.err_status.modify(err_status::CSIDINVAL::CLEAR);
                 unimplemented!();
             }
             if err_status.is_set(err_status::ACCESSINVAL) {
-                is_test = false;
+                //is_test = false;
+                regs.err_status.modify(err_status::ACCESSINVAL::CLEAR);
                 unimplemented!();
             }
             if is_test {
@@ -211,7 +216,7 @@ impl SpiHost {
             is_test = true;
             self.clear_event_interrupt();
             if status.is_set(status::RXFULL) {
-                is_test = false;
+                //is_test = false;
                 unimplemented!();
             }
             //This could be set at init, so only follow through
@@ -223,11 +228,11 @@ impl SpiHost {
                 self.continue_transfer();
             }
             if status.is_set(status::RXWM) {
-                is_test = false;
+                //is_test = false;
                 unimplemented!();
             }
             if status.is_set(status::TXWM) {
-                is_test = false;
+                //is_test = false;
                 unimplemented!();
             }
             if status.is_set(status::READY) {
@@ -236,7 +241,7 @@ impl SpiHost {
                 //unimplemented!();
             }
             if status.is_set(status::ACTIVE) {
-                is_test = false;
+                //is_test = false;
                 unimplemented!();
             }
             if is_test {
@@ -272,12 +277,9 @@ impl SpiHost {
         if self.tx_offset.get() == self.tx_len.get() {
             self.client.map(|client| match self.tx_buf.take() {
                 None => (),
-                Some(tx_buf) => client.read_write_done(
-                    tx_buf,
-                    Some(rx_buf),
-                    self.tx_len.get(),
-                    Ok(()),
-                ),
+                Some(tx_buf) => {
+                    client.read_write_done(tx_buf, Some(rx_buf), self.tx_len.get(), Ok(()))
+                }
             });
             debug!("TOCK: Transfer Complete");
             self.reset_internal_state();
@@ -331,7 +333,7 @@ impl SpiHost {
     }
 
     /// Reset the soft internal state, should be called once
-    /// a spi transaction has been completed. 
+    /// a spi transaction has been completed.
     fn reset_internal_state(&self) {
         self.clear_spi_busy();
         self.tx_len.set(0);
@@ -417,7 +419,7 @@ impl SpiHost {
         regs.intr_test
             .write(intr::ERROR::CLEAR + intr::SPI_EVENT::CLEAR);
     }
-    
+
     /// Will generate a `test` interrupt on the event irq
     #[allow(dead_code)]
     fn test_event_interrupt(&self) {
@@ -437,7 +439,7 @@ impl SpiHost {
         regs.event_en.modify(event_en::TXEMPTY::CLEAR);
     }
 
-    /// Enable the event interrupt and enable TXEMPTY 
+    /// Enable the event interrupt and enable TXEMPTY
     /// TXEMPTY will call back once the TXFIFO has been drained
     fn enable_tx_interrupt(&self) {
         let regs = self.registers;
@@ -450,7 +452,6 @@ impl SpiHost {
         let regs = self.registers;
         regs.err_en.modify(err_en::CMDBUSY::SET);
     }
-
 
     fn set_spi_busy(&self) {
         self.busy.set(true);
@@ -472,7 +473,6 @@ impl hil::spi::SpiMaster for SpiHost {
 
     fn init(&self) -> Result<(), ErrorCode> {
         debug!("SPI: Init");
-        let regs = self.registers;
 
         self.reset_spi_ip();
         self.enable_spi_host();
@@ -573,7 +573,7 @@ impl hil::spi::SpiMaster for SpiHost {
         return Err(ErrorCode::NODEVICE);
     }
 
-    fn read_write_byte(&self, val: u8) -> Result<u8, ErrorCode> {
+    fn read_write_byte(&self, _val: u8) -> Result<u8, ErrorCode> {
         debug_assert!(self.initialized.get());
         //Use `read_write_bytes()` instead.
         return Err(ErrorCode::NODEVICE);
