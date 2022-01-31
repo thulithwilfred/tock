@@ -422,7 +422,8 @@ unsafe fn setup() -> (
         board_kernel,
         mux_spi,
         //TODO SPI-CS: Figure out actual CS
-        &peripherals.gpio_port[7],
+        //&peripherals.gpio_port[7],
+        0,
         capsules::spi_controller::DRIVER_NUM,
     )
     .finalize(components::spi_syscall_component_helper!(
