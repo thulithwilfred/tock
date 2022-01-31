@@ -135,9 +135,9 @@ register_bitfields![u32,
 pub struct SpiHost {
     registers: StaticRef<SpiHostRegisters>,
     client: OptionalCell<&'static dyn hil::spi::SpiMasterClient>,
-    chip_select: OptionalCell<&'static dyn hil::gpio::Pin>,
     initialized: Cell<bool>,
     busy: Cell<bool>,
+    chip_select: Cell<u32>,
     tx_buf: TakeCell<'static, [u8]>,
     rx_buf: TakeCell<'static, [u8]>,
     tx_len: Cell<usize>,
@@ -151,9 +151,9 @@ impl SpiHost {
         SpiHost {
             registers: base,
             client: OptionalCell::empty(),
-            chip_select: OptionalCell::empty(),
             initialized: Cell::new(false),
             busy: Cell::new(false),
+            chip_select: Cell::new(0),
             tx_buf: TakeCell::empty(),
             rx_buf: TakeCell::empty(),
             tx_len: Cell::new(0),
@@ -170,6 +170,7 @@ impl SpiHost {
         let mut is_test;
         self.disable_interrupts();
         if irq.is_set(intr::ERROR) {
+            //TODO If any ret err
             debug!("[TOCK_ERR: Error Interrupt Set]");
             let err_status = regs.err_status.extract();
             is_test = true;
@@ -177,7 +178,7 @@ impl SpiHost {
                 is_test = false;
                 regs.err_status.modify(err_status::CMDBUSY::CLEAR);
                 debug!("TOCK_ERR: CMDBUSY")
-            }
+            } 
             if err_status.is_set(err_status::OVERFLOW) {
                 //is_test = false;
                 regs.err_status.modify(err_status::OVERFLOW::CLEAR);
@@ -469,7 +470,8 @@ impl SpiHost {
 }
 
 impl hil::spi::SpiMaster for SpiHost {
-    type ChipSelect = &'static dyn hil::gpio::Pin;
+    //type ChipSelect = &'static dyn hil::gpio::Pin;
+    type ChipSelect = u32;
 
     fn init(&self) -> Result<(), ErrorCode> {
         debug!("SPI: Init");
@@ -510,16 +512,16 @@ impl hil::spi::SpiMaster for SpiHost {
         let regs = self.registers;
 
         // Clear (set to low) chip-select
-        if self.chip_select.is_none() {
-            return Err((ErrorCode::NODEVICE, tx_buf, rx_buf));
-        }
+        // if self.chip_select.is_none() {
+        //     return Err((ErrorCode::NODEVICE, tx_buf, rx_buf));
+        // }
 
         if self.is_busy() || regs.status.is_set(status::TXFULL) {
             return Err((ErrorCode::BUSY, tx_buf, rx_buf));
         }
 
         // Call is ignored, if the pin is not I/O
-        self.chip_select.map(|cs| cs.clear());
+        //self.chip_select.map(|cs| cs.clear());
         self.tx_len.set(cmp::min(len, tx_buf.len()));
 
         let mut t_byte: u32;
@@ -564,31 +566,35 @@ impl hil::spi::SpiMaster for SpiHost {
     fn write_byte(&self, _val: u8) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
         //Use `read_write_bytes()` instead.
-        return Err(ErrorCode::NODEVICE);
+        Err(ErrorCode::NODEVICE)
     }
 
     fn read_byte(&self) -> Result<u8, ErrorCode> {
         debug_assert!(self.initialized.get());
         //Use `read_write_bytes()` instead.
-        return Err(ErrorCode::NODEVICE);
+        Err(ErrorCode::NODEVICE)
     }
 
     fn read_write_byte(&self, _val: u8) -> Result<u8, ErrorCode> {
         debug_assert!(self.initialized.get());
         //Use `read_write_bytes()` instead.
-        return Err(ErrorCode::NODEVICE);
+        Err(ErrorCode::NODEVICE)
     }
 
     fn specify_chip_select(&self, cs: Self::ChipSelect) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
-        cs.make_output();
-        cs.set();
+        let regs = self.registers;
+
+        //CSID will index the CONFIGOPTS multi-register 
+        regs.csid.write(csid_ctrl::CSID.val(cs));
         self.chip_select.set(cs);
+
         Ok(())
     }
 
     fn set_rate(&self, rate: u32) -> Result<u32, ErrorCode> {
-        //unimplemented!("SPI: Set Rate {:?}", _rate);
+        //TODO START HERE 1
+        debug!("RATE\n\n\n");
         debug_assert!(self.initialized.get());
         Ok(rate)
     }
@@ -602,7 +608,8 @@ impl hil::spi::SpiMaster for SpiHost {
     fn set_polarity(&self, polarity: ClockPolarity) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
         let regs = self.registers;
-
+        //TODO START HERE 2
+        debug!("POLA\n\n\n");
         match polarity {
             ClockPolarity::IdleLow => regs.config_opts.write(conf_opts::CPOL_0::CLEAR),
             ClockPolarity::IdleHigh => regs.config_opts.write(conf_opts::CPOL_0::SET),
@@ -624,7 +631,8 @@ impl hil::spi::SpiMaster for SpiHost {
     fn set_phase(&self, phase: ClockPhase) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
         let regs = self.registers;
-
+        debug!("PHASE\n\n\n");
+        //TODO START HERE 3
         match phase {
             ClockPhase::SampleLeading => regs.config_opts.write(conf_opts::CPHA_0::CLEAR),
             ClockPhase::SampleTrailing => regs.config_opts.write(conf_opts::CPHA_0::SET),
