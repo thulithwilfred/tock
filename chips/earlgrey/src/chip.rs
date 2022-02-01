@@ -51,8 +51,14 @@ impl<'a> EarlGreyDefaultPeripherals<'a> {
                 crate::i2c::I2C0_BASE,
                 (1 / CONFIG.cpu_freq) * 1000 * 1000,
             ),
-            spi_host0: lowrisc::spi_host::SpiHost::new(crate::spi_host::SPIHOST0_BASE),
-            spi_host1: lowrisc::spi_host::SpiHost::new(crate::spi_host::SPIHOST1_BASE),
+            spi_host0: lowrisc::spi_host::SpiHost::new(
+                crate::spi_host::SPIHOST0_BASE,
+                CONFIG.cpu_freq,
+            ),
+            spi_host1: lowrisc::spi_host::SpiHost::new(
+                crate::spi_host::SPIHOST1_BASE,
+                CONFIG.cpu_freq,
+            ),
             flash_ctrl: lowrisc::flash_ctrl::FlashCtrl::new(
                 crate::flash_ctrl::FLASH_CTRL_BASE,
                 lowrisc::flash_ctrl::FlashRegion::REGION0,

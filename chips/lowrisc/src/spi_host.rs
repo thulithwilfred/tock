@@ -1,4 +1,4 @@
-//! Serial Peripheral Interface (SPI) Driver
+//! Serial Peripheral Interface (SPI) Host Driver
 use core::cell::Cell;
 use core::cmp;
 use core::option::Option;
@@ -137,7 +137,10 @@ pub struct SpiHost {
     client: OptionalCell<&'static dyn hil::spi::SpiMasterClient>,
     initialized: Cell<bool>,
     busy: Cell<bool>,
+    cs_active_after: Cell<bool>,
     chip_select: Cell<u32>,
+    cpu_clk: Cell<u32>,
+    tsclk: Cell<u32>,
     tx_buf: TakeCell<'static, [u8]>,
     rx_buf: TakeCell<'static, [u8]>,
     tx_len: Cell<usize>,
@@ -147,13 +150,16 @@ pub struct SpiHost {
 }
 
 impl SpiHost {
-    pub const fn new(base: StaticRef<SpiHostRegisters>) -> Self {
+    pub const fn new(base: StaticRef<SpiHostRegisters>, cpu_clk: u32) -> Self {
         SpiHost {
             registers: base,
             client: OptionalCell::empty(),
             initialized: Cell::new(false),
             busy: Cell::new(false),
+            cs_active_after: Cell::new(false),
             chip_select: Cell::new(0),
+            cpu_clk: Cell::new(cpu_clk),
+            tsclk: Cell::new(0),
             tx_buf: TakeCell::empty(),
             rx_buf: TakeCell::empty(),
             tx_len: Cell::new(0),
@@ -178,31 +184,31 @@ impl SpiHost {
                 is_test = false;
                 regs.err_status.modify(err_status::CMDBUSY::CLEAR);
                 debug!("TOCK_ERR: CMDBUSY")
-            } 
+            }
             if err_status.is_set(err_status::OVERFLOW) {
                 //is_test = false;
                 regs.err_status.modify(err_status::OVERFLOW::CLEAR);
-                unimplemented!();
+                unimplemented!("OVERFLOW");
             }
             if err_status.is_set(err_status::UNDERFLOW) {
                 //is_test = false;
                 regs.err_status.modify(err_status::UNDERFLOW::CLEAR);
-                unimplemented!();
+                unimplemented!("UNDERFLOW");
             }
             if err_status.is_set(err_status::CMDINVAL) {
                 //is_test = false;
                 regs.err_status.modify(err_status::CMDINVAL::CLEAR);
-                unimplemented!();
+                unimplemented!("COMMAND INVALID");
             }
             if err_status.is_set(err_status::CSIDINVAL) {
                 //is_test = false;
                 regs.err_status.modify(err_status::CSIDINVAL::CLEAR);
-                unimplemented!();
+                unimplemented!("CSID INVALID");
             }
             if err_status.is_set(err_status::ACCESSINVAL) {
                 //is_test = false;
                 regs.err_status.modify(err_status::ACCESSINVAL::CLEAR);
-                unimplemented!();
+                unimplemented!("ACCESSINVAL");
             }
             if is_test {
                 self.clear_tests();
@@ -329,8 +335,14 @@ impl SpiHost {
     fn start_transceive(&self, tx_len: u32) {
         let regs = self.registers;
         //Direction (3) -> Bidirectional TX/RX
-        regs.command
-            .write(command::LEN.val(tx_len) + command::DIRECTION.val(3));
+        if self.cs_active_after.get() {
+            regs.command
+                .write(command::LEN.val(tx_len) + command::DIRECTION.val(3) + command::CSAAT::SET);
+        } else {
+            regs.command.write(
+                command::LEN.val(tx_len) + command::DIRECTION.val(3) + command::CSAAT::CLEAR,
+            );
+        }
     }
 
     /// Reset the soft internal state, should be called once
@@ -451,7 +463,8 @@ impl SpiHost {
     /// Enable required error interrupts
     fn err_enable(&self) {
         let regs = self.registers;
-        regs.err_en.modify(err_en::CMDBUSY::SET);
+        regs.err_en
+            .modify(err_en::CMDBUSY::SET + err_en::CMDINVAL::SET + err_en::CSIDINVAL::SET);
     }
 
     fn set_spi_busy(&self) {
@@ -466,6 +479,23 @@ impl SpiHost {
     /// up to the nearest integer
     fn div_up(&self, a: usize, b: usize) -> usize {
         (a + (b - 1)) / b
+    }
+
+    /// Calculate the scaler based on a specified tsclk rate
+    /// This scaler will pre-scale the cpu_clk and must be <= cpu_clk/2
+    fn calculate_tsck_scaler(&self, rate: u32) -> Result<u16, ErrorCode> {
+        if rate > self.cpu_clk.get() / 2 {
+            return Err(ErrorCode::NOSUPPORT);
+        }
+        //Divide and truncate
+        let mut scaler: u32 = (self.cpu_clk.get() / (2 * rate)) - 1;
+
+        //Increase scaler if the division was not exact, ensuring that it does not overflow
+        //or exceed divider specification where tsck is at most <= Tclk/2
+        if self.cpu_clk.get() % (2 * rate) != 0 && scaler != 0xFF {
+            scaler += 1;
+        }
+        Ok(scaler as u16)
     }
 }
 
@@ -483,6 +513,7 @@ impl hil::spi::SpiMaster for SpiHost {
         self.initialized.set(true);
 
         self.enable_interrupts();
+
         //self.test_error_interrupt();
         //self.test_event_interrupt();
         Ok(())
@@ -585,7 +616,7 @@ impl hil::spi::SpiMaster for SpiHost {
         debug_assert!(self.initialized.get());
         let regs = self.registers;
 
-        //CSID will index the CONFIGOPTS multi-register 
+        //CSID will index the CONFIGOPTS multi-register
         regs.csid.write(csid_ctrl::CSID.val(cs));
         self.chip_select.set(cs);
 
@@ -593,26 +624,31 @@ impl hil::spi::SpiMaster for SpiHost {
     }
 
     fn set_rate(&self, rate: u32) -> Result<u32, ErrorCode> {
-        //TODO START HERE 1
-        debug!("RATE\n\n\n");
         debug_assert!(self.initialized.get());
-        Ok(rate)
+        let regs = self.registers;
+
+        match self.calculate_tsck_scaler(rate) {
+            Ok(scaler) => {
+                regs.config_opts
+                    .modify(conf_opts::CLKDIV_0.val(scaler as u32));
+                self.tsclk.set(rate);
+                return Ok(rate);
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     fn get_rate(&self) -> u32 {
         debug_assert!(self.initialized.get());
-        let _rc = 0;
-        unimplemented!("SPI: Get Rate");
+        self.tsclk.get()
     }
 
     fn set_polarity(&self, polarity: ClockPolarity) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
         let regs = self.registers;
-        //TODO START HERE 2
-        debug!("POLA\n\n\n");
         match polarity {
-            ClockPolarity::IdleLow => regs.config_opts.write(conf_opts::CPOL_0::CLEAR),
-            ClockPolarity::IdleHigh => regs.config_opts.write(conf_opts::CPOL_0::SET),
+            ClockPolarity::IdleLow => regs.config_opts.modify(conf_opts::CPOL_0::CLEAR),
+            ClockPolarity::IdleHigh => regs.config_opts.modify(conf_opts::CPOL_0::SET),
         };
         Ok(())
     }
@@ -631,11 +667,9 @@ impl hil::spi::SpiMaster for SpiHost {
     fn set_phase(&self, phase: ClockPhase) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
         let regs = self.registers;
-        debug!("PHASE\n\n\n");
-        //TODO START HERE 3
         match phase {
-            ClockPhase::SampleLeading => regs.config_opts.write(conf_opts::CPHA_0::CLEAR),
-            ClockPhase::SampleTrailing => regs.config_opts.write(conf_opts::CPHA_0::SET),
+            ClockPhase::SampleLeading => regs.config_opts.modify(conf_opts::CPHA_0::CLEAR),
+            ClockPhase::SampleTrailing => regs.config_opts.modify(conf_opts::CPHA_0::SET),
         };
         Ok(())
     }
@@ -645,18 +679,19 @@ impl hil::spi::SpiMaster for SpiHost {
         let regs = self.registers;
 
         match regs.config_opts.read(conf_opts::CPHA_0) {
-            1 => ClockPhase::SampleTrailing,
-            0 => ClockPhase::SampleTrailing,
+            1 => return ClockPhase::SampleTrailing,
+            0 => return ClockPhase::SampleLeading,
             _ => unreachable!(),
         };
-        unimplemented!("SPI: Get Phase");
     }
 
     fn hold_low(&self) {
-        unimplemented!("SPI: Hold Low");
+        //This is taken into account when a command is issued during r/w bytes
+        self.cs_active_after.set(true);
     }
 
     fn release_low(&self) {
-        unimplemented!("SPI: Hold Low");
+        //This is taken into account when a command is issued during r/w bytes
+        self.cs_active_after.set(false);
     }
 }
