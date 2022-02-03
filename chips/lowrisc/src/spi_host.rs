@@ -306,13 +306,14 @@ impl SpiHost {
         let mut t_byte: u32;
 
         while !regs.status.is_set(status::TXFULL) {
-            t_byte = tx_buf[self.tx_offset.get()].into();
-            regs.tx_data.write(tx_data::DATA.val(t_byte));
-            self.tx_offset.set(self.tx_offset.get() + 1);
             //Transfer Completed
             if self.tx_offset.get() >= self.tx_len.get() {
                 break;
             }
+            
+            t_byte = tx_buf[self.tx_offset.get()].into();
+            regs.tx_data.write(tx_data::DATA.val(t_byte));
+            self.tx_offset.set(self.tx_offset.get() + 1);
         }
         //Last byte was rejected
         if regs.status.is_set(status::TXFULL) && (self.tx_offset.get() <= self.tx_len.get()) {
@@ -504,12 +505,16 @@ impl hil::spi::SpiMaster for SpiHost {
     type ChipSelect = u32;
 
     fn init(&self) -> Result<(), ErrorCode> {
-        debug!("SPI: Init");
+        debug!("SPI: Init 1");
 
-        self.reset_spi_ip();
+        //self.reset_spi_ip();
+        debug!("SPI: Init 2");
         self.enable_spi_host();
+        debug!("SPI: Init 3");
         self.event_enable();
+        debug!("SPI: Init 4");
         self.err_enable();
+        debug!("SPI: Init 5");
         self.initialized.set(true);
 
         self.enable_interrupts();
@@ -560,12 +565,13 @@ impl hil::spi::SpiMaster for SpiHost {
         self.set_spi_busy();
 
         while !regs.status.is_set(status::TXFULL) {
-            t_byte = tx_buf[self.tx_offset.get()].into();
-            regs.tx_data.write(tx_data::DATA.val(t_byte));
             //Transfer Complete in one-shot
             if self.tx_offset.get() >= self.tx_len.get() {
                 break;
             }
+            t_byte = tx_buf[self.tx_offset.get()].into();
+            regs.tx_data.write(tx_data::DATA.val(t_byte));
+
             self.tx_offset.set(self.tx_offset.get() + 1);
         }
 
