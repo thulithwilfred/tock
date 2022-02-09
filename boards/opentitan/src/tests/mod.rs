@@ -46,10 +46,11 @@ fn trivial_assertion() {
     run_kernel_op(100);
 }
 
-mod aes_test;
-mod csrng;
-mod hmac;
-mod multi_alarm;
-mod otbn;
-mod sip_hash;
-mod tickv_test;
+// mod aes_test;
+// mod csrng;
+// mod hmac;
+// mod multi_alarm;
+// mod otbn;
+// mod sip_hash;
+// mod tickv_test;
+mod spi_host;
