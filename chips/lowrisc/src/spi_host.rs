@@ -148,6 +148,10 @@ pub struct SpiHost {
     tx_offset: Cell<usize>,
     rx_offset: Cell<usize>,
 }
+// SPI Host Command Direction: Bidirectional
+const SPI_HOST_CMD_BIDIRECTIONAL: u32 = 3;
+// SPI Host Command Speed: Standard SPI
+const SPI_HOST_CMD_STANDARD_SPI: u32 = 0;
 
 impl SpiHost {
     pub const fn new(base: StaticRef<SpiHostRegisters>, cpu_clk: u32) -> Self {
@@ -225,9 +229,11 @@ impl SpiHost {
             let status = regs.status.extract();
             is_test = true;
             self.clear_event_interrupt();
+
             if status.is_set(status::RXFULL) {
+                debug!("TOCK_EV: RXFULL");
                 //is_test = false;
-                unimplemented!();
+                //unimplemented!();
             }
             //This could be set at init, so only follow through
             //once a transfer has started (is_busy())
@@ -236,7 +242,7 @@ impl SpiHost {
                 is_test = false;
                 //self.enable_tx_interrupt();
                 self.continue_transfer();
-                self.show_debug();
+                //self.show_debug();
             }
 
             if status.is_set(status::RXWM) {
@@ -259,6 +265,7 @@ impl SpiHost {
             if status.is_set(status::ACTIVE) {
                 is_test = false;
                 debug!("TOCK_EV: ACTIVE");
+                self.enable_interrupts();
                 //unimplemented!();
             }
             if is_test {
@@ -303,6 +310,7 @@ impl SpiHost {
                 }
             });
             debug!("TOCK: Transfer Complete");
+            self.show_debug();
             self.disable_tx_interrupt();
             self.reset_internal_state();
         } else {
@@ -320,36 +328,42 @@ impl SpiHost {
         let regs = self.registers;
         let mut t_byte: u32;
         let mut tx_slice: [u8; 4];
-
-        while !regs.status.is_set(status::TXFULL) {
+ 
+        assert_eq!(regs.status.read(status::TXQD), 0);
+        assert_eq!(regs.status.read(status::ACTIVE), 0);
+        
+        let mut d_me = 0;
+        while !regs.status.is_set(status::TXFULL) && regs.status.read(status::TXQD) < 64{
             
             tx_slice = [0, 0, 0, 0];
             for n in 0..4 {
                 if self.tx_offset.get() >= self.tx_len.get() {
+                    debug!("XXX: 1 {} {}", self.tx_offset.get() , tx_offset_start);
                     break;
-                }
-                tx_slice[n] = tx_buf[self.tx_offset.get()];
+                } 
+                tx_slice[n] = tx_buf[self.tx_offset.get()];       
                 self.tx_offset.set(self.tx_offset.get() + 1);
             }
             t_byte =  u32::from_le_bytes(tx_slice);
-
             regs.tx_data.write(tx_data::DATA.val(t_byte));
+            d_me += 1;
 
             //Transfer Complete in one-shot
             if self.tx_offset.get() >= self.tx_len.get() {
                 break;
             }
+
         }
 
-        //Last word was rejected
-        if regs.status.is_set(status::TXFULL) && (self.tx_offset.get() <= self.tx_len.get()) {
-            self.tx_offset.set(self.tx_offset.get() - 4);
-        }
+        debug!("DEBUG: 2 {} {} {}\n", self.tx_offset.get(), tx_offset_start, d_me );
+        //self.show_debug();
+
         //Hold tx_buf for offset transfer continue
         self.tx_buf.replace(tx_buf);
 
         //Set command register to init transfer
         self.start_transceive((self.tx_offset.get() - tx_offset_start) as u32);
+
         debug!(
             "TOCK: Transfer Continue OK {}",
             (self.tx_offset.get() - tx_offset_start)
@@ -360,8 +374,8 @@ impl SpiHost {
         let regs = self.registers;
         //debug!("[TOCK]: Start Trasnfer");
         //debug!("[TOCK]: SPE_EN {} OUT_EN {}", regs.ctrl.read(ctrl::SPIEN),  regs.ctrl.read(ctrl::OUTPUT_EN));
-        //debug!("TOCK_EV: TWXM {}", regs.ctrl.read(ctrl::TX_WATERMARK));
-        debug!("--TOCK_EV: TXQD {}", regs.status.read(status::TXQD));
+        debug!("--TOCK_EV: TWXM {}", regs.ctrl.read(ctrl::TX_WATERMARK));
+        debug!("TOCK_EV: TXQD {}", regs.status.read(status::TXQD));
         //debug!("TOCK_EV: CMDQD {}", regs.status.read(status::CMDQD));
         debug!("TOCK_EV: TXSTALL {}", regs.status.read(status::TXSTALL));
         debug!("TOCK_EV: TXEMPTY {}", regs.status.read(status::TXEMPTY));
@@ -370,24 +384,27 @@ impl SpiHost {
     }
     /// Issue a command to start SPI transaction
     /// Currently only Bi-Directional transactions are supported
+    // TODO: Remove tx_len arg to this, we don't care
     fn start_transceive(&self, tx_len: u32) {
         let regs = self.registers;
+        //8-bits that describe command transfer len (cannot exceed 255)
+        let num_transfer_bytes: u32;
+        //TXQD holds number of 32bit words
+        let txfifo_num_bytes = regs.status.read(status::TXQD) * 4;
 
-        //Wait for status ready to be set before continuing
-        while !regs.status.is_set(status::READY) {}
-
-        self.show_debug();
-        //Direction (3) -> Bidirectional TX/RX
-        if self.cs_active_after.get() {
-            regs.command
-                .write(command::LEN.val(tx_len) + command::DIRECTION.val(3) + command::CSAAT::SET + command::SPEED.val(0));
+        if txfifo_num_bytes > u8::MAX as u32 {
+            num_transfer_bytes = u8::MAX as u32 ;
         } else {
-            regs.command.write(
-                command::LEN.val(tx_len) + command::DIRECTION.val(3) + command::CSAAT::CLEAR + command::SPEED.val(0));
+            num_transfer_bytes = txfifo_num_bytes;
         }
-        
+
+        debug!("YY TXQD {}", regs.status.read(status::TXQD));
+        regs.command.write(
+            command::LEN.val(num_transfer_bytes) +
+            command::DIRECTION.val(SPI_HOST_CMD_BIDIRECTIONAL) +
+            command::CSAAT::CLEAR + command::SPEED.val(SPI_HOST_CMD_STANDARD_SPI));
+
         self.enable_interrupts();
-        //self.enable_tx_interrupt();
     }
 
     /// Reset the soft internal state, should be called once
@@ -407,10 +424,11 @@ impl SpiHost {
     fn enable_spi_host(&self) {
         let regs = self.registers;
         //Enables the SPI host
-        regs.ctrl.write(ctrl::SPIEN::SET + ctrl::OUTPUT_EN::SET);
+        regs.ctrl.modify(ctrl::SPIEN::SET + ctrl::OUTPUT_EN::SET);
     }
 
     /// Reset SPI Host
+    #[allow(dead_code)]
     fn reset_spi_ip(&self) {
         let regs = self.registers;
         //IP to reset state
@@ -422,29 +440,6 @@ impl SpiHost {
         while regs.status.read(status::TXQD) != 0 && regs.status.read(status::RXQD) != 0 {}
         //Clear Reset
         regs.ctrl.modify(ctrl::SW_RST::CLEAR);
-    }
-
-    #[allow(dead_code)]
-    fn enable_err_interrupt(&self) {
-        let regs = self.registers;
-        regs.intr_enable.modify(intr::ERROR::SET);
-    }
-
-    #[allow(dead_code)]
-    fn enable_event_interrupt(&self) {
-        let regs = self.registers;
-        regs.intr_enable.modify(intr::SPI_EVENT::SET);
-    }
-
-    #[allow(dead_code)]
-    fn disable_err_interrupt(&self) {
-        let regs = self.registers;
-        regs.intr_enable.write(intr::ERROR::CLEAR);
-    }
-    #[allow(dead_code)]
-    fn disable_event_interrupt(&self) {
-        let regs = self.registers;
-        regs.intr_enable.modify(intr::SPI_EVENT::CLEAR);
     }
 
     /// Enable both event/err IRQ
@@ -552,11 +547,10 @@ impl SpiHost {
 }
 
 impl hil::spi::SpiMaster for SpiHost {
-    //type ChipSelect = &'static dyn hil::gpio::Pin;
     type ChipSelect = u32;
 
     fn init(&self) -> Result<(), ErrorCode> {
-        debug!("SPI: Init");
+        //debug!("SPI: Init");
 
         //self.reset_spi_ip();
         self.event_enable();
@@ -573,7 +567,7 @@ impl hil::spi::SpiMaster for SpiHost {
     }
 
     fn set_client(&self, client: &'static dyn hil::spi::SpiMasterClient) {
-        debug!("SPI: Set Client");
+        //debug!("SPI: Set Client");
         self.client.set(client);
     }
 
@@ -611,8 +605,9 @@ impl hil::spi::SpiMaster for SpiHost {
         // The following write (0x00), works around this `bug`. 
         // Could be Verilator specific
         regs.tx_data.write(tx_data::DATA.val(0x00));
+        assert_eq!(regs.status.read(status::TXQD), 0);
 
-        while !regs.status.is_set(status::TXFULL) {
+        while !regs.status.is_set(status::TXFULL) && regs.status.read(status::TXQD) < 64{
             tx_slice = [0, 0, 0, 0];
             for n in 0..4 {
                 if self.tx_offset.get() >= self.tx_len.get() {
@@ -630,11 +625,6 @@ impl hil::spi::SpiMaster for SpiHost {
             }
         }
 
-        //Last word was rejected
-        if regs.status.is_set(status::TXFULL) && (self.tx_offset.get() <= self.tx_len.get()) {
-            self.tx_offset.set(self.tx_offset.get() - 4);
-        }
-
         //Hold tx_buf for offset transfer continue
         self.tx_buf.replace(tx_buf);
 
@@ -647,8 +637,9 @@ impl hil::spi::SpiMaster for SpiHost {
         }
 
         //Set command register to init transfer
-        self.start_transceive(self.tx_offset.get() as u32);
-        debug!("TOCK: R/W Bytes OK");
+        self.start_transceive((self.tx_offset.get()) as u32);
+
+        debug!("TOCK: R/W Bytes OK {}", self.tx_offset.get());
         Ok(())
     }
 
@@ -672,7 +663,7 @@ impl hil::spi::SpiMaster for SpiHost {
 
     fn specify_chip_select(&self, cs: Self::ChipSelect) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
-        debug!("SPI: S CS {:?}", cs);
+        //debug!("SPI: S CS {:?}", cs);
         let regs = self.registers;
 
         //CSID will index the CONFIGOPTS multi-register
@@ -688,7 +679,7 @@ impl hil::spi::SpiMaster for SpiHost {
 
         match self.calculate_tsck_scaler(rate) {
             Ok(scaler) => {
-                debug!("SPI: CLSCL: {:?}", scaler);
+                //debug!("SPI: CLSCL: {:?}", scaler);
                 regs.config_opts
                     .modify(conf_opts::CLKDIV_0.val(scaler as u32));
                 self.tsclk.set(rate);
@@ -705,7 +696,7 @@ impl hil::spi::SpiMaster for SpiHost {
 
     fn set_polarity(&self, polarity: ClockPolarity) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
-        debug!("SPI: SET POL {:?}", polarity);
+        //debug!("SPI: SET POL {:?}", polarity);
         let regs = self.registers;
         match polarity {
             ClockPolarity::IdleLow => regs.config_opts.modify(conf_opts::CPOL_0::CLEAR),
@@ -727,7 +718,7 @@ impl hil::spi::SpiMaster for SpiHost {
 
     fn set_phase(&self, phase: ClockPhase) -> Result<(), ErrorCode> {
         debug_assert!(self.initialized.get());
-        debug!("SPI: SET PHASE {:?}", phase);
+        //debug!("SPI: SET PHASE {:?}", phase);
         let regs = self.registers;
         match phase {
             ClockPhase::SampleLeading => regs.config_opts.modify(conf_opts::CPHA_0::CLEAR),
