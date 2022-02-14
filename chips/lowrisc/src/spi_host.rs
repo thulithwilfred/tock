@@ -179,51 +179,26 @@ impl SpiHost {
         let irq = regs.intr_state.extract();
         let mut is_test;
         self.disable_interrupts();
+
         if irq.is_set(intr::ERROR) {
-            //TODO If any ret err
-            debug!("[TOCK_ERR: Error Interrupt Set]");
-            let err_status = regs.err_status.extract();
-            is_test = true;
-            if err_status.is_set(err_status::CMDBUSY) {
-                is_test = false;
-                regs.err_status.modify(err_status::CMDBUSY::CLEAR);
-                debug!("TOCK_ERR: CMDBUSY")
-            }
-            if err_status.is_set(err_status::OVERFLOW) {
-                is_test = false;
-                regs.err_status.modify(err_status::OVERFLOW::CLEAR);
-                //unimplemented!("OVERFLOW");
-                debug!("TOCK_ERR: OFLOW")
-            }
-            if err_status.is_set(err_status::UNDERFLOW) {
-                is_test = false;
-                regs.err_status.modify(err_status::UNDERFLOW::CLEAR);
-                //unimplemented!("UNDERFLOW");
-                debug!("TOCK_ERR: UFLOW")
-            }
-            if err_status.is_set(err_status::CMDINVAL) {
-                is_test = false;
-                regs.err_status.modify(err_status::CMDINVAL::CLEAR);
-                unimplemented!("COMMAND INVALID");
-            }
-            if err_status.is_set(err_status::CSIDINVAL) {
-                is_test = false;
-                regs.err_status.modify(err_status::CSIDINVAL::CLEAR);
-                unimplemented!("CSID INVALID");
-            }
-            if err_status.is_set(err_status::ACCESSINVAL) {
-                is_test = false;
-                regs.err_status.modify(err_status::ACCESSINVAL::CLEAR);
-                unimplemented!("ACCESSINVAL");
-            }
-            if is_test {
-                self.clear_tests();
-                debug!("TOCK_ERR: Test Error Interrupt");
-            }
-            //TODO Can clear everything here
+            let rx_buf = self.rx_buf.take().unwrap();
+            self.client.map(|client| match self.tx_buf.take() {
+                None => (),
+                Some(tx_buf) => client.read_write_done(
+                    tx_buf,
+                    Some(rx_buf),
+                    self.tx_offset.get(),
+                    Err(ErrorCode::FAIL),
+                ),
+            });
             //Specified to be cleared, after err_status is cleared.
             self.clear_err_interrupt();
+            //Something went wrong, reset IP and clear buffers
+            self.reset_spi_ip();
+            self.reset_internal_state();
+            return;
         }
+
         if irq.is_set(intr::SPI_EVENT) {
             debug!("[TOCK_EV: Event Interrupt Set]");
             let status = regs.status.extract();
@@ -251,8 +226,8 @@ impl SpiHost {
                 //unimplemented!();
             }
             if status.is_set(status::TXWM) && self.is_busy() {
-                is_test = false;      
-                debug!("TOCK_EV: TXWM");         
+                is_test = false;
+                debug!("TOCK_EV: TXWM");
                 // self.enable_tx_interrupt();
                 // self.continue_transfer();
                 //unimplemented!();
@@ -286,7 +261,7 @@ impl SpiHost {
         let mut shift_mask;
         let rx_len = self.tx_offset.get() - self.rx_offset.get();
         let read_cycles = self.div_up(rx_len, 4);
-        
+
         //Receive rx_data (Only 4byte reads are supported)
         for _n in 0..read_cycles {
             val32 = regs.rx_data.read(rx_data::DATA);
@@ -328,23 +303,22 @@ impl SpiHost {
         let regs = self.registers;
         let mut t_byte: u32;
         let mut tx_slice: [u8; 4];
- 
+
         assert_eq!(regs.status.read(status::TXQD), 0);
         assert_eq!(regs.status.read(status::ACTIVE), 0);
-        
+
         let mut d_me = 0;
-        while !regs.status.is_set(status::TXFULL) && regs.status.read(status::TXQD) < 64{
-            
+        while !regs.status.is_set(status::TXFULL) && regs.status.read(status::TXQD) < 64 {
             tx_slice = [0, 0, 0, 0];
             for n in 0..4 {
                 if self.tx_offset.get() >= self.tx_len.get() {
-                    debug!("XXX: 1 {} {}", self.tx_offset.get() , tx_offset_start);
+                    debug!("XXX: 1 {} {}", self.tx_offset.get(), tx_offset_start);
                     break;
-                } 
-                tx_slice[n] = tx_buf[self.tx_offset.get()];       
+                }
+                tx_slice[n] = tx_buf[self.tx_offset.get()];
                 self.tx_offset.set(self.tx_offset.get() + 1);
             }
-            t_byte =  u32::from_le_bytes(tx_slice);
+            t_byte = u32::from_le_bytes(tx_slice);
             regs.tx_data.write(tx_data::DATA.val(t_byte));
             d_me += 1;
 
@@ -352,10 +326,14 @@ impl SpiHost {
             if self.tx_offset.get() >= self.tx_len.get() {
                 break;
             }
-
         }
 
-        debug!("DEBUG: 2 {} {} {}\n", self.tx_offset.get(), tx_offset_start, d_me );
+        debug!(
+            "DEBUG: 2 {} {} {}\n",
+            self.tx_offset.get(),
+            tx_offset_start,
+            d_me
+        );
         //self.show_debug();
 
         //Hold tx_buf for offset transfer continue
@@ -393,16 +371,18 @@ impl SpiHost {
         let txfifo_num_bytes = regs.status.read(status::TXQD) * 4;
 
         if txfifo_num_bytes > u8::MAX as u32 {
-            num_transfer_bytes = u8::MAX as u32 ;
+            num_transfer_bytes = u8::MAX as u32;
         } else {
             num_transfer_bytes = txfifo_num_bytes;
         }
 
         debug!("YY TXQD {}", regs.status.read(status::TXQD));
         regs.command.write(
-            command::LEN.val(num_transfer_bytes) +
-            command::DIRECTION.val(SPI_HOST_CMD_BIDIRECTIONAL) +
-            command::CSAAT::CLEAR + command::SPEED.val(SPI_HOST_CMD_STANDARD_SPI));
+            command::LEN.val(num_transfer_bytes)
+                + command::DIRECTION.val(SPI_HOST_CMD_BIDIRECTIONAL)
+                + command::CSAAT::CLEAR
+                + command::SPEED.val(SPI_HOST_CMD_STANDARD_SPI),
+        );
 
         self.enable_interrupts();
     }
@@ -428,7 +408,6 @@ impl SpiHost {
     }
 
     /// Reset SPI Host
-    #[allow(dead_code)]
     fn reset_spi_ip(&self) {
         let regs = self.registers;
         //IP to reset state
@@ -459,6 +438,14 @@ impl SpiHost {
     /// Clear the error IRQ
     fn clear_err_interrupt(&self) {
         let regs = self.registers;
+        //Clear Error Masks
+        regs.err_status.modify(err_status::CMDBUSY::CLEAR);
+        regs.err_status.modify(err_status::OVERFLOW::CLEAR);
+        regs.err_status.modify(err_status::UNDERFLOW::CLEAR);
+        regs.err_status.modify(err_status::CMDINVAL::CLEAR);
+        regs.err_status.modify(err_status::CSIDINVAL::CLEAR);
+        regs.err_status.modify(err_status::ACCESSINVAL::CLEAR);
+        //Clear Error IRQ
         regs.intr_state.modify(intr::ERROR::CLEAR);
     }
 
@@ -493,7 +480,6 @@ impl SpiHost {
         regs.event_en.write(event_en::TXEMPTY::SET);
     }
 
-
     fn disable_tx_interrupt(&self) {
         let regs = self.registers;
         regs.event_en.modify(event_en::TXEMPTY::CLEAR);
@@ -510,8 +496,13 @@ impl SpiHost {
     /// Enable required error interrupts
     fn err_enable(&self) {
         let regs = self.registers;
-        regs.err_en
-            .modify(err_en::CMDBUSY::SET + err_en::CMDINVAL::SET + err_en::CSIDINVAL::SET + err_en::OVERFLOW::SET + err_en::UNDERFLOW::SET);
+        regs.err_en.modify(
+            err_en::CMDBUSY::SET
+                + err_en::CMDINVAL::SET
+                + err_en::CSIDINVAL::SET
+                + err_en::OVERFLOW::SET
+                + err_en::UNDERFLOW::SET,
+        );
     }
 
     fn set_spi_busy(&self) {
@@ -555,7 +546,7 @@ impl hil::spi::SpiMaster for SpiHost {
         //self.reset_spi_ip();
         self.event_enable();
         self.err_enable();
-        
+
         self.enable_interrupts();
 
         // self.test_error_interrupt();
@@ -588,7 +579,7 @@ impl hil::spi::SpiMaster for SpiHost {
         debug_assert!(self.tx_buf.is_none());
         debug_assert!(self.rx_buf.is_none());
         let regs = self.registers;
-        
+
         if self.is_busy() || regs.status.is_set(status::TXFULL) {
             return Err((ErrorCode::BUSY, tx_buf, rx_buf));
         }
@@ -600,14 +591,14 @@ impl hil::spi::SpiMaster for SpiHost {
         //We are committing to the transfer now
         self.set_spi_busy();
 
-        //TODO: I think this is bug in OT, where the `first` word written 
+        //TODO: I think this is bug in OT, where the `first` word written
         // (while TXEMPTY) to TX_DATA is dropped/ignored and not added to TX_FIFO (TXQD = 0).
-        // The following write (0x00), works around this `bug`. 
+        // The following write (0x00), works around this `bug`.
         // Could be Verilator specific
         regs.tx_data.write(tx_data::DATA.val(0x00));
         assert_eq!(regs.status.read(status::TXQD), 0);
 
-        while !regs.status.is_set(status::TXFULL) && regs.status.read(status::TXQD) < 64{
+        while !regs.status.is_set(status::TXFULL) && regs.status.read(status::TXQD) < 64 {
             tx_slice = [0, 0, 0, 0];
             for n in 0..4 {
                 if self.tx_offset.get() >= self.tx_len.get() {
@@ -615,8 +606,8 @@ impl hil::spi::SpiMaster for SpiHost {
                 }
                 tx_slice[n] = tx_buf[self.tx_offset.get()];
                 self.tx_offset.set(self.tx_offset.get() + 1);
-            }         
-            t_byte =  u32::from_le_bytes(tx_slice);
+            }
+            t_byte = u32::from_le_bytes(tx_slice);
             regs.tx_data.write(tx_data::DATA.val(t_byte));
 
             //Transfer Complete in one-shot
