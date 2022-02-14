@@ -177,7 +177,6 @@ impl SpiHost {
     pub fn handle_interrupt(&self) {
         let regs = self.registers;
         let irq = regs.intr_state.extract();
-        let mut is_test;
         self.disable_interrupts();
 
         if irq.is_set(intr::ERROR) {
@@ -202,53 +201,20 @@ impl SpiHost {
         if irq.is_set(intr::SPI_EVENT) {
             debug!("[TOCK_EV: Event Interrupt Set]");
             let status = regs.status.extract();
-            is_test = true;
             self.clear_event_interrupt();
 
-            if status.is_set(status::RXFULL) {
-                debug!("TOCK_EV: RXFULL");
-                //is_test = false;
-                //unimplemented!();
-            }
             //This could be set at init, so only follow through
             //once a transfer has started (is_busy())
             if status.is_set(status::TXEMPTY) && self.is_busy() {
                 debug!("TOCK_EV: TX Empty");
-                is_test = false;
                 //self.enable_tx_interrupt();
                 self.continue_transfer();
                 //self.show_debug();
-            }
-
-            if status.is_set(status::RXWM) {
-                is_test = false;
-                debug!("TOCK_EV: RXWM");
-                //unimplemented!();
-            }
-            if status.is_set(status::TXWM) && self.is_busy() {
-                is_test = false;
-                debug!("TOCK_EV: TXWM");
-                // self.enable_tx_interrupt();
-                // self.continue_transfer();
-                //unimplemented!();
-            }
-            if status.is_set(status::READY) {
-                is_test = false;
-                debug!("TOCK_EV: IRQ READY");
-                //unimplemented!();
-            }
-            if status.is_set(status::ACTIVE) {
-                is_test = false;
-                debug!("TOCK_EV: ACTIVE");
+            } else {
+                debug!("TOCK_EV: Unhandled Event");
                 self.enable_interrupts();
-                //unimplemented!();
-            }
-            if is_test {
-                self.clear_tests();
-                debug!("TOCK_EV: Test Event Interrupt");
             }
         }
-        //self.enable_interrupts();
     }
 
     //Determine if transfer complete or if we need to keep
