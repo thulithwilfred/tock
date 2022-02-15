@@ -137,7 +137,6 @@ pub struct SpiHost {
     client: OptionalCell<&'static dyn hil::spi::SpiMasterClient>,
     initialized: Cell<bool>,
     busy: Cell<bool>,
-    cs_active_after: Cell<bool>,
     chip_select: Cell<u32>,
     cpu_clk: Cell<u32>,
     tsclk: Cell<u32>,
@@ -160,7 +159,6 @@ impl SpiHost {
             client: OptionalCell::empty(),
             initialized: Cell::new(false),
             busy: Cell::new(false),
-            cs_active_after: Cell::new(false),
             chip_select: Cell::new(0),
             cpu_clk: Cell::new(cpu_clk),
             tsclk: Cell::new(0),
@@ -180,22 +178,25 @@ impl SpiHost {
         self.disable_interrupts();
 
         if irq.is_set(intr::ERROR) {
-            let rx_buf = self.rx_buf.take().unwrap();
-            self.client.map(|client| match self.tx_buf.take() {
-                None => (),
-                Some(tx_buf) => client.read_write_done(
-                    tx_buf,
-                    Some(rx_buf),
-                    self.tx_offset.get(),
-                    Err(ErrorCode::FAIL),
-                ),
-            });
-            //Specified to be cleared, after err_status is cleared.
-            self.clear_err_interrupt();
-            //Something went wrong, reset IP and clear buffers
-            self.reset_spi_ip();
-            self.reset_internal_state();
-            return;
+            if self.rx_buf.is_some() {
+                self.rx_buf.take().map(|rx_buf| {
+                    self.client.map(|client| match self.tx_buf.take() {
+                        None => (),
+                        Some(tx_buf) => client.read_write_done(
+                            tx_buf,
+                            Some(rx_buf),
+                            self.tx_offset.get(),
+                            Err(ErrorCode::FAIL),
+                        ),
+                    });
+                });
+                //Specified to be cleared, after err_status is cleared.
+                self.clear_err_interrupt();
+                //Something went wrong, reset IP and clear buffers
+                self.reset_spi_ip();
+                self.reset_internal_state();
+                return;
+            }
         }
 
         if irq.is_set(intr::SPI_EVENT) {
@@ -220,98 +221,110 @@ impl SpiHost {
     //Determine if transfer complete or if we need to keep
     //writing from an offset.
     fn continue_transfer(&self) {
-        let regs = self.registers;
-        let rx_buf = self.rx_buf.take().unwrap();
-        let mut val32: u32;
-        let mut val8: u8;
-        let mut shift_mask;
-        let rx_len = self.tx_offset.get() - self.rx_offset.get();
-        let read_cycles = self.div_up(rx_len, 4);
+        if self.rx_buf.is_some() {
+            self.rx_buf.take().map(|rx_buf| {
+                let regs = self.registers;
+                let mut val32: u32;
+                let mut val8: u8;
+                let mut shift_mask;
+                let rx_len = self.tx_offset.get() - self.rx_offset.get();
+                let read_cycles = self.div_up(rx_len, 4);
 
-        //Receive rx_data (Only 4byte reads are supported)
-        for _n in 0..read_cycles {
-            val32 = regs.rx_data.read(rx_data::DATA);
-            shift_mask = 0xFF;
-            for i in 0..4 {
-                if self.rx_offset.get() >= self.rx_len.get() {
-                    break;
+                //Receive rx_data (Only 4byte reads are supported)
+                for _n in 0..read_cycles {
+                    val32 = regs.rx_data.read(rx_data::DATA);
+                    shift_mask = 0xFF;
+                    for i in 0..4 {
+                        if self.rx_offset.get() >= self.rx_len.get() {
+                            break;
+                        }
+                        val8 = ((val32 & shift_mask) >> i * 8) as u8;
+                        rx_buf[self.rx_offset.get()] = val8;
+                        self.rx_offset.set(self.rx_offset.get() + 1);
+                        shift_mask = shift_mask << 8;
+                    }
                 }
-                val8 = ((val32 & shift_mask) >> i * 8) as u8;
-                rx_buf[self.rx_offset.get()] = val8;
-                self.rx_offset.set(self.rx_offset.get() + 1);
-                shift_mask = shift_mask << 8;
-            }
-        }
-        //Transfer was complete */
-        if self.tx_offset.get() == self.tx_len.get() {
-            self.client.map(|client| match self.tx_buf.take() {
-                None => (),
-                Some(tx_buf) => {
-                    client.read_write_done(tx_buf, Some(rx_buf), self.tx_len.get(), Ok(()))
+                //Transfer was complete */
+                if self.tx_offset.get() == self.tx_len.get() {
+                    self.client.map(|client| match self.tx_buf.take() {
+                        None => (),
+                        Some(tx_buf) => {
+                            client.read_write_done(tx_buf, Some(rx_buf), self.tx_len.get(), Ok(()))
+                        }
+                    });
+                    debug!("TOCK: Transfer Complete");
+                    self.show_debug();
+                    self.disable_tx_interrupt();
+                    self.reset_internal_state();
+                } else {
+                    debug!("TOCK: Continue Transfer");
+                    self.rx_buf.replace(rx_buf);
+                    //Theres more to transfer, continue writing from the offset
+                    self.spi_transfer_progress();
                 }
             });
-            debug!("TOCK: Transfer Complete");
-            self.show_debug();
-            self.disable_tx_interrupt();
-            self.reset_internal_state();
         } else {
-            debug!("TOCK: Continue Transfer");
-            self.rx_buf.replace(rx_buf);
-            //Theres more to transfer, continue writing from the offset
-            self.spi_transfer_progress();
+            //Should never get here
+            panic!("spi_host: No RX Buffer");
         }
     }
 
     /// Continue SPI transfer from offset point
     fn spi_transfer_progress(&self) {
-        let tx_buf = self.tx_buf.take().unwrap();
-        let tx_offset_start = self.tx_offset.get();
-        let regs = self.registers;
-        let mut t_byte: u32;
-        let mut tx_slice: [u8; 4];
+        if self.tx_buf.is_some() {
+            self.tx_buf.take().map(|tx_buf| {
+                let tx_offset_start = self.tx_offset.get();
+                let regs = self.registers;
+                let mut t_byte: u32;
+                let mut tx_slice: [u8; 4];
 
-        assert_eq!(regs.status.read(status::TXQD), 0);
-        assert_eq!(regs.status.read(status::ACTIVE), 0);
+                assert_eq!(regs.status.read(status::TXQD), 0);
+                assert_eq!(regs.status.read(status::ACTIVE), 0);
 
-        let mut d_me = 0;
-        while !regs.status.is_set(status::TXFULL) && regs.status.read(status::TXQD) < 64 {
-            tx_slice = [0, 0, 0, 0];
-            for n in 0..4 {
-                if self.tx_offset.get() >= self.tx_len.get() {
-                    debug!("XXX: 1 {} {}", self.tx_offset.get(), tx_offset_start);
-                    break;
+                let mut d_me = 0;
+                while !regs.status.is_set(status::TXFULL) && regs.status.read(status::TXQD) < 64 {
+                    tx_slice = [0, 0, 0, 0];
+                    for n in 0..4 {
+                        if self.tx_offset.get() >= self.tx_len.get() {
+                            debug!("XXX: 1 {} {}", self.tx_offset.get(), tx_offset_start);
+                            break;
+                        }
+                        tx_slice[n] = tx_buf[self.tx_offset.get()];
+                        self.tx_offset.set(self.tx_offset.get() + 1);
+                    }
+                    t_byte = u32::from_le_bytes(tx_slice);
+                    regs.tx_data.write(tx_data::DATA.val(t_byte));
+                    d_me += 1;
+
+                    //Transfer Complete in one-shot
+                    if self.tx_offset.get() >= self.tx_len.get() {
+                        break;
+                    }
                 }
-                tx_slice[n] = tx_buf[self.tx_offset.get()];
-                self.tx_offset.set(self.tx_offset.get() + 1);
-            }
-            t_byte = u32::from_le_bytes(tx_slice);
-            regs.tx_data.write(tx_data::DATA.val(t_byte));
-            d_me += 1;
 
-            //Transfer Complete in one-shot
-            if self.tx_offset.get() >= self.tx_len.get() {
-                break;
-            }
+                debug!(
+                    "DEBUG: 2 {} {} {}\n",
+                    self.tx_offset.get(),
+                    tx_offset_start,
+                    d_me
+                );
+                //self.show_debug();
+
+                //Hold tx_buf for offset transfer continue
+                self.tx_buf.replace(tx_buf);
+
+                //Set command register to init transfer
+                self.start_transceive((self.tx_offset.get() - tx_offset_start) as u32);
+
+                debug!(
+                    "TOCK: Transfer Continue OK {}",
+                    (self.tx_offset.get() - tx_offset_start)
+                );
+            });
+        } else {
+            //Should never get here
+            panic!("spi_host: No TX Buffer");
         }
-
-        debug!(
-            "DEBUG: 2 {} {} {}\n",
-            self.tx_offset.get(),
-            tx_offset_start,
-            d_me
-        );
-        //self.show_debug();
-
-        //Hold tx_buf for offset transfer continue
-        self.tx_buf.replace(tx_buf);
-
-        //Set command register to init transfer
-        self.start_transceive((self.tx_offset.get() - tx_offset_start) as u32);
-
-        debug!(
-            "TOCK: Transfer Continue OK {}",
-            (self.tx_offset.get() - tx_offset_start)
-        );
     }
 
     fn show_debug(&self) {
@@ -343,13 +356,23 @@ impl SpiHost {
         }
 
         debug!("YY TXQD {}", regs.status.read(status::TXQD));
-        regs.command.write(
-            command::LEN.val(num_transfer_bytes)
-                + command::DIRECTION.val(SPI_HOST_CMD_BIDIRECTIONAL)
-                + command::CSAAT::CLEAR
-                + command::SPEED.val(SPI_HOST_CMD_STANDARD_SPI),
-        );
-
+        //Flush all data in TXFIFO and assert CSAAT for all
+        // but the last transfer segment.
+        if self.tx_offset.get() >= self.tx_len.get() {
+            regs.command.write(
+                command::LEN.val(num_transfer_bytes)
+                    + command::DIRECTION.val(SPI_HOST_CMD_BIDIRECTIONAL)
+                    + command::CSAAT::CLEAR
+                    + command::SPEED.val(SPI_HOST_CMD_STANDARD_SPI),
+            );
+        } else {
+            regs.command.write(
+                command::LEN.val(num_transfer_bytes)
+                    + command::DIRECTION.val(SPI_HOST_CMD_BIDIRECTIONAL)
+                    + command::CSAAT::SET
+                    + command::SPEED.val(SPI_HOST_CMD_STANDARD_SPI),
+            );
+        }
         self.enable_interrupts();
     }
 
@@ -550,6 +573,10 @@ impl hil::spi::SpiMaster for SpiHost {
             return Err((ErrorCode::BUSY, tx_buf, rx_buf));
         }
 
+        if rx_buf.is_none() {
+            return Err((ErrorCode::NOMEM, tx_buf, rx_buf));
+        }
+
         self.tx_len.set(cmp::min(len, tx_buf.len()));
 
         let mut t_byte: u32;
@@ -587,10 +614,11 @@ impl hil::spi::SpiMaster for SpiHost {
 
         //Hold rx_buf for later
         if rx_buf.is_some() {
-            let rx_buf_t = rx_buf.unwrap();
-            self.rx_len
-                .set(cmp::min(self.tx_len.get() as usize, rx_buf_t.len()) as usize);
-            self.rx_buf.replace(rx_buf_t);
+            rx_buf.map(|rx_buf_t| {
+                self.rx_len
+                    .set(cmp::min(self.tx_len.get() as usize, rx_buf_t.len()) as usize);
+                self.rx_buf.replace(rx_buf_t);
+            });
         }
 
         //Set command register to init transfer
@@ -695,13 +723,15 @@ impl hil::spi::SpiMaster for SpiHost {
         };
     }
 
+    /// hold_low is controlled by IP based on command segments issued
+    /// force holds are not supported
     fn hold_low(&self) {
-        //This is taken into account when a command is issued during r/w bytes
-        self.cs_active_after.set(true);
+        unimplemented!("spi_host: does not support hold low");
     }
 
+    /// release_low is controlled by IP based on command segments issued
+    /// force releases are not supported
     fn release_low(&self) {
-        //This is taken into account when a command is issued during r/w bytes
-        self.cs_active_after.set(false);
+        unimplemented!("spi_host: does not support release low");
     }
 }
