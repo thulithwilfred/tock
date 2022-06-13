@@ -20,9 +20,9 @@ Programming
 -----------
 
 Tock on OpenTitan requires
-lowRISC/opentitan@217a0168ba118503c166a9587819e3811eeb0c0c. In
-general it is recommended that users start with the specified commit as newer
-versions have not been tested.
+lowRISC/opentitan@217a0168ba118503c166a9587819e3811eeb0c0c or newer. In
+general it is recommended that users start with the latest OpenTitan bitstream
+and if that results in issues try the one mentioned above.
 
 Unfortunately the OpenTitan documentation is out of sync with the Tock setup.
 For instructions that match the OpenTitan version Tock supports you will need

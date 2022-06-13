@@ -340,7 +340,10 @@ impl<'a> FlashCtrl<'a> {
         self.disable_interrupts();
 
         if irqs.is_set(INTR::OP_ERROR) {
+<<<<<<< HEAD
             debug!("errcode: 0x{:x}, error address: 0x{:x}", self.registers.err_code.get(), self.registers.err_addr.get());
+=======
+>>>>>>> 1ff1a35aa (boards/opentitan: Bump the hardware SHA)
             self.registers.op_status.set(0);
 
             let read_buf = self.read_buf.take();
