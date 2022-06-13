@@ -10,15 +10,34 @@ MEMORY
 
 MPU_MIN_ALIGN = 1K;
 SECTIONS {
-    /*
-     * The flash header needs to match what the boot ROM for OpenTitan is
-     * expecting.  At the moment, it contains only the entry point, but it
-     * will eventually contain the signature -- and (hopefully?!) some
-     * versioning information to make it slightly easier to debug when the
-     * boot ROM and Tock are out of sync with respect to the definition...
-     */
-    .flash_header : {
-        LONG(_stext)
+    .manifest ORIGIN(rom):
+    {
+      /* sw/device/silicon_creator/lib/manifest.h */
+      . = . + 384; /* signature */
+      . = . + 4;   /* usage_constraints.selector_bits */
+      . = . + 32;  /* usage_constraints.device_id */
+      . = . + 4;   /* usage_constraints.manuf_state_creator */
+      . = . + 4;   /* usage_constraints.manuf_state_owner */
+      . = . + 4;   /* usage_constraints.life_cycle_state */
+      . = . + 384; /* modulus */
+      . = . + 4;   /* address_translation */
+      . = . + 4;   /* identifier */
+      . = . + 4;   /* length */
+      . = . + 4;   /* version_major */
+      . = . + 4;   /* version_minor */
+      . = . + 4;   /* security_version */
+      . = . + 8;   /* timestamp */
+      . = . + 32;  /* binding_value */
+      . = . + 4;   /* max_key_version */
+      . = . + 4;   /* code_start */
+      . = . + 4;   /* code_end */
+      LONG(_stext); /* entry_point */
+      . = . + 128; /* padding */
+      /* size = 1024 bytes */
+    } > rom
+
+    .vectors : ALIGN (256) {
+      KEEP(*(.riscv.open_titan_trap_vectored));
     } > rom
 }
 
