@@ -70,45 +70,91 @@ Opentitan is supported on both an FPGA and in Verilator. Slightly different
 versions of the EarlGrey chip implementation are required for the different
 platforms. By default the kernel is compiled for the FPGA.
 
-## Setting up Verilator
-
-For a full guide see the official OpenTitan documentation: https://docs.opentitan.org/doc/ug/getting_started_verilator/
-
-A quick summary on how to do this is included below though
-
-### Build FuseSoc
+### Setup OpenTitan
 
 ```shell
 git clone https://github.com/lowRISC/opentitan.git
 cd opentitan
+# Use the OpenTitan_SHA currently supported by Tock
 git checkout <OpenTitan_SHA>
 pip3 install --user -r python-requirements.txt
+```
+Make sure to follow [OpenTitan getting started instructions](https://docs.opentitan.org/doc/getting_started/) to setup required dependencies/toolchains.
 
-LANG="en_US.UTF-8" fusesoc --cores-root . run --flag=fileset_top --target=sim --setup --build lowrisc:dv:chip_verilator_sim
+### **Fedora dependencies quick install**
+
+Note: the OpenTitan documentation provides an easy installation for packages for Ubuntu based distributions. This is an equivalent command to install the (mostly) same packages for Fedora
+
+```shell
+sudo dnf install autoconf bison make automake gcc gcc-c++ kernel-devel \
+		 clang-tools-extra clang cmake curl \
+		 doxygen flex g++ git golang lcov elfutils-libelf \
+ 		 libftdi libftdi-devel ncurses-compat-libs openssl-devel \
+		 systemd-devel libusb redhat-lsb-core \
+		 make ninja-build perl pkgconf python3 python3-pip python3-setuptools \
+		 python3-urllib3 python3-wheel srecord tree xsltproc zlib-devel xz clang-tools-extra \
+		 clang11-libs clang-devel elfutils-libelf-devel
 ```
 
-### Build Boot Rom/OTP Image
+## Setting up Verilator
 
-Build only the targets we care about.
+For a full guide see the official [OpenTitan Verilator documentation](https://docs.opentitan.org/doc/ug/getting_started_verilator/)
+
+A quick summary on how to do this is included below though
+
+### Build Boot Rom/OTP Image and FuseSOC
+
+Build **only the targets** we care about. Note: the following commands assume  `bazelisk.sh` has been aliased to `bazel`. You may do so with `alias bazel="bazelisk.sh"` (from the root of the OpenTitan directory).
+
 ```shell
-./meson_init.sh
-ninja -C build-out sw/device/lib/testing/test_rom/test_rom_export_sim_verilator
-ninja -C build-out sw/device/otp_img/otp_img_sim_verilator.vmem
+# To build the ROM
+bazel build //sw/device/lib/testing/test_rom:test_rom
+
+# To build OTP
+bazel build //hw/ip/otp_ctrl/...
+
+# To build FuseSOC
+bazel build //hw:verilator
 ```
 
 ### Test Verilator
 
-```shell
-build/lowrisc_dv_chip_verilator_sim_0.1/sim-verilator/Vchip_sim_tb \
-    --meminit=rom,./build-out/sw/device/lib/testing/test_rom/test_rom_sim_verilator.scr.39.vmem \
-    --meminit=otp,./build-out/sw/device/otp_img/otp_img_sim_verilator.vmem
+You can use the following to automatically build the relevant targets and run a quick test with
 
-# Read the output, you want to attach screen to UART
+```shell
+bazel test --test_output=streamed //sw/device/tests:uart_smoketest_sim_verilator
+```
+
+or manually with
+
+```shell
+
+bazel-out/k8-fastbuild/bin/hw/build.verilator_real/sim-verilator/Vchip_sim_tb \
+                                    --meminit=rom,./bazel-out/k8-fastbuild-ST-97f470ee3b14/bin/sw/device/lib/testing/test_rom/test_rom_sim_verilator.scr.39.vmem \
+                                    --meminit=otp,./bazel-out/k8-fastbuild/bin/hw/ip/otp_ctrl/data/rma_image_verilator.vmem
+
+# Read the output, you want to attach screen to UART, for example
+# "UART: Created /dev/pts/4 for uart0. Connect to it with any terminal program, "
+
 screen /dev/pts/4
 
 # Wait a few minutes
 # You should eventually see messages in screen
-# Once you see "waiting for SPI input..." you know it works
+# Once you see "Test ROM complete, jumping to flash!" you know it works, note at this point we haven't provided flash image (so it ends here).
+```
+
+At this point Opentitan on Verilator should be ready to go!
+
+### Bazel CQuery [Optional]
+
+To quickly find paths of the OTP/ROM targets, Bazel can be invoked with the following commands to use cquery.
+
+```shell
+# ROM:
+	bazel cquery //sw/device/lib/testing/test_rom:test_rom_sim_verilator_scr_vmem --output starlark --starlark:expr="target.files.to_list()[0].path" 2> /dev/null
+
+# OTP:
+	bazel cquery //hw/ip/otp_ctrl/data:rma_image_verilator --output starlark --starlark:expr="target.files.to_list()[0].path" 2> /dev/null
 ```
 
 ### Build and Run Tock
