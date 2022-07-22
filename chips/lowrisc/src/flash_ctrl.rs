@@ -340,10 +340,11 @@ impl<'a> FlashCtrl<'a> {
         self.disable_interrupts();
 
         if irqs.is_set(INTR::OP_ERROR) {
-<<<<<<< HEAD
-            debug!("errcode: 0x{:x}, error address: 0x{:x}", self.registers.err_code.get(), self.registers.err_addr.get());
-=======
->>>>>>> 1ff1a35aa (boards/opentitan: Bump the hardware SHA)
+            debug!(
+                "errcode: 0x{:x}, error address: 0x{:x}",
+                self.registers.err_code.get(),
+                self.registers.err_addr.get()
+            );
             self.registers.op_status.set(0);
 
             let read_buf = self.read_buf.take();
@@ -410,15 +411,17 @@ impl<'a> FlashCtrl<'a> {
                 if let Some(buf) = read_buf {
                     // We were doing a read
                     if self.read_index.get() >= buf.0.len() {
-                        debug!(
-                            "Read complete",
-                        );
+                        debug!("Read complete",);
                         debug!(
                             "op_status: 0x{:x}, status: 0x{:x}",
                             self.registers.op_status.get(),
                             self.registers.status.get()
                         );
-                        debug!("errcode: 0x{:x}, error address: 0x{:x}", self.registers.err_code.get(), self.registers.err_addr.get());
+                        debug!(
+                            "errcode: 0x{:x}, error address: 0x{:x}",
+                            self.registers.err_code.get(),
+                            self.registers.err_addr.get()
+                        );
                         self.registers.op_status.set(0);
                         // We have all of the data, call the client
                         self.flash_client.map(move |client| {
@@ -435,15 +438,17 @@ impl<'a> FlashCtrl<'a> {
                 if let Some(buf) = write_buf {
                     // We were doing a write
                     if self.write_index.get() >= buf.0.len() {
-                        debug!(
-                            "Write complete",
-                        );
+                        debug!("Write complete",);
                         debug!(
                             "op_status: 0x{:x}, status: 0x{:x}",
                             self.registers.op_status.get(),
                             self.registers.status.get()
                         );
-                        debug!("errcode: 0x{:x}, error address: 0x{:x}", self.registers.err_code.get(), self.registers.err_addr.get());
+                        debug!(
+                            "errcode: 0x{:x}, error address: 0x{:x}",
+                            self.registers.err_code.get(),
+                            self.registers.err_addr.get()
+                        );
                         self.registers.op_status.set(0);
                         // We sent all of the data, call the client
                         self.flash_client.map(move |client| {
