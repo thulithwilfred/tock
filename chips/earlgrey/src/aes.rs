@@ -275,6 +275,13 @@ impl<'a> Aes<'a> {
 
 impl<'a> hil::symmetric_encryption::AES128<'a> for Aes<'a> {
     fn enable(&self) {
+        // Must wait for IDLE, for trigger to set.
+        // On reset, AES unit will first reseed the internal PRNGs
+        // for register clearing and masking via EDN, and then
+        // clear all key, IV and data registers with pseudo-random data.
+        // Only after this sequence has finished, the unit becomes idle
+        while !self.idle() {};
+
         self.registers.trigger.write(
             TRIGGER::KEY_IV_DATA_IN_CLEAR::SET
                 + TRIGGER::DATA_OUT_CLEAR::SET
@@ -434,7 +441,7 @@ impl<'a> hil::symmetric_encryption::AES128<'a> for Aes<'a> {
 impl kernel::hil::symmetric_encryption::AES128Ctr for Aes<'_> {
     fn set_mode_aes128ctr(&self, encrypting: bool) -> Result<(), ErrorCode> {
         if !self.idle() {
-            return Err(ErrorCode::BUSY);
+            while !self.idle() {};
         }
 
         self.mode.set(Mode::AES128CTR);
@@ -460,7 +467,7 @@ impl kernel::hil::symmetric_encryption::AES128Ctr for Aes<'_> {
 impl kernel::hil::symmetric_encryption::AES128ECB for Aes<'_> {
     fn set_mode_aes128ecb(&self, encrypting: bool) -> Result<(), ErrorCode> {
         if !self.idle() {
-            return Err(ErrorCode::BUSY);
+            while !self.idle() {};
         }
 
         self.mode.set(Mode::AES128ECB);
@@ -486,7 +493,7 @@ impl kernel::hil::symmetric_encryption::AES128ECB for Aes<'_> {
 impl kernel::hil::symmetric_encryption::AES128CBC for Aes<'_> {
     fn set_mode_aes128cbc(&self, encrypting: bool) -> Result<(), ErrorCode> {
         if !self.idle() {
-            return Err(ErrorCode::BUSY);
+            while !self.idle() {};
         }
 
         self.mode.set(Mode::AES128CBC);
