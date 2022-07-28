@@ -50,7 +50,7 @@ fn trivial_assertion() {
 }
 
 mod aes_test;
-mod csrng;
+// mod csrng;
 mod hmac;
 mod multi_alarm;
 mod otbn;

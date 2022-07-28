@@ -11,7 +11,7 @@ use kernel::utilities::registers::{
 
 use kernel::hil;
 use kernel::utilities::StaticRef;
-use kernel::ErrorCode;
+use kernel::{debug, ErrorCode};
 
 register_structs! {
     pub FlashCtrlRegisters {
@@ -340,6 +340,7 @@ impl<'a> FlashCtrl<'a> {
         self.disable_interrupts();
 
         if irqs.is_set(INTR::OP_ERROR) {
+            debug!("errcode: 0x{:x}, error address: 0x{:x}", self.registers.err_code.get(), self.registers.err_addr.get());
             self.registers.op_status.set(0);
 
             let read_buf = self.read_buf.take();
@@ -404,6 +405,15 @@ impl<'a> FlashCtrl<'a> {
                 if let Some(buf) = read_buf {
                     // We were doing a read
                     if self.read_index.get() >= buf.0.len() {
+                        debug!(
+                            "Read complete",
+                        );
+                        debug!(
+                            "op_status: 0x{:x}, status: 0x{:x}",
+                            self.registers.op_status.get(),
+                            self.registers.status.get()
+                        );
+                        debug!("errcode: 0x{:x}, error address: 0x{:x}", self.registers.err_code.get(), self.registers.err_addr.get());
                         self.registers.op_status.set(0);
                         // We have all of the data, call the client
                         self.flash_client.map(move |client| {
@@ -420,6 +430,15 @@ impl<'a> FlashCtrl<'a> {
                 if let Some(buf) = write_buf {
                     // We were doing a write
                     if self.write_index.get() >= buf.0.len() {
+                        debug!(
+                            "Write complete",
+                        );
+                        debug!(
+                            "op_status: 0x{:x}, status: 0x{:x}",
+                            self.registers.op_status.get(),
+                            self.registers.status.get()
+                        );
+                        debug!("errcode: 0x{:x}, error address: 0x{:x}", self.registers.err_code.get(), self.registers.err_addr.get());
                         self.registers.op_status.set(0);
                         // We sent all of the data, call the client
                         self.flash_client.map(move |client| {
@@ -455,6 +474,8 @@ impl hil::flash::Flash for FlashCtrl<'_> {
         buf: &'static mut Self::Page,
     ) -> Result<(), (ErrorCode, &'static mut Self::Page)> {
         let addr = page_number * PAGE_SIZE;
+
+        debug!("read_page: 0x{:x}", addr);
 
         if !self.data_configured.get() {
             // If we aren't configured yet, configure now
@@ -494,6 +515,8 @@ impl hil::flash::Flash for FlashCtrl<'_> {
         buf: &'static mut Self::Page,
     ) -> Result<(), (ErrorCode, &'static mut Self::Page)> {
         let addr = page_number * PAGE_SIZE;
+
+        debug!("write_page: 0x{:x}", addr);
 
         if !self.data_configured.get() {
             // If we aren't configured yet, configure now

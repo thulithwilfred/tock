@@ -9,7 +9,7 @@ use kernel::utilities::registers::{
     register_bitfields, register_structs, ReadOnly, ReadWrite, WriteOnly,
 };
 use kernel::utilities::StaticRef;
-use kernel::ErrorCode;
+use kernel::{debug, ErrorCode};
 
 register_structs! {
     pub CsRngRegisters {
@@ -139,6 +139,8 @@ impl<'a> CsRng<'a> {
         let irqs = self.registers.intr_state.extract();
         self.disable_interrupts();
 
+        debug!("handle_interrupt");
+
         if irqs.is_set(INTR::HW_INST_EXC) {
             self.client.map(move |client| {
                 client.entropy_available(&mut (0..0), Err(ErrorCode::FAIL));
@@ -194,14 +196,31 @@ impl<'a> Entropy32<'a> for CsRng<'a> {
                 + COMMAND::GLEN.val(0),
         );
         while !self.registers.sw_cmd_sts.is_set(SW_CMD_STS::CMD_RDY) {}
+        debug!(
+            "sw_cmd_sts: {}; err_code: {}",
+            self.registers.sw_cmd_sts.get(),
+            self.registers.err_code.get()
+        );
 
         self.disable_interrupts();
         self.enable_interrupts();
 
         // Get 256 bits of entropy
-        self.registers
-            .cmd_req
-            .write(COMMAND::ACMD::GENERATE + COMMAND::FLAGS.val(0) + COMMAND::GLEN.val(0x2));
+        self.registers.cmd_req.write(
+            COMMAND::ACMD::GENERATE
+                + COMMAND::FLAGS::INSTANTIATE_SOURCE_XOR_SEED
+                + COMMAND::GLEN.val(0x2),
+        );
+
+        debug!(
+            "sw_cmd_sts: {}; err_code: {}",
+            self.registers.sw_cmd_sts.get(),
+            self.registers.err_code.get()
+        );
+        debug!(
+            "self.registers.genbits.get(): {}",
+            self.registers.genbits.get()
+        );
 
         Ok(())
     }

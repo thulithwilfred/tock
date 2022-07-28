@@ -16,7 +16,7 @@ use kernel::platform::mpu;
 use kernel::utilities::cells::{MapCell, OptionalCell};
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable};
 use kernel::utilities::registers::{self, register_bitfields};
-use kernel::ProcessId;
+use kernel::{debug, ProcessId};
 
 // Generic PMP config
 register_bitfields![u8,
@@ -171,6 +171,18 @@ impl<const MAX_AVAILABLE_REGIONS_OVER_TWO: usize> fmt::Display
             } else {
                 unreachable!()
             }
+        }
+
+        write!(f, " ePMP Addresses:\r\n")?;
+
+        for i in 0..(MAX_AVAILABLE_REGIONS_OVER_TWO * 2) {
+            write!(f, "{}: {:x}\r\n", i, csr::CSR.pmpaddr_get(i))?;
+        }
+
+        write!(f, " ePMP Configs:\r\n")?;
+
+        for i in 0..(MAX_AVAILABLE_REGIONS_OVER_TWO / 2) {
+            write!(f, "{}: {:x}\r\n", i, csr::CSR.pmpconfig_get(i))?;
         }
 
         write!(f, " ePMP regions:\r\n")?;
@@ -360,6 +372,7 @@ impl PMPRegion {
         // PMP addresses are not inclusive on the high end, that is
         //     pmpaddr[i-i] <= y < pmpaddr[i]
         if region_start < (other_end - 4) && other_start < (region_end - 4) {
+            // panic!("region_start: 0x{:x}, region_end: 0x{:x}. 0x{:x}", region_start, region_end, other_end);
             true
         } else {
             false
@@ -387,8 +400,25 @@ impl<const MAX_AVAILABLE_REGIONS_OVER_TWO: usize> Default
     /// number of regions we can protect is `NUM_REGIONS/2`. Limitations of min_const_generics
     /// require us to pass both of these values as separate generic consts.
     fn default() -> Self {
+        let mut regions = [None; MAX_AVAILABLE_REGIONS_OVER_TWO];
+
+        if csr::CSR.mseccfg.is_set(csr::mseccfg::mseccfg::mmwp) {
+            debug!("Setting?");
+            // We will default to PMP denied, so we need to ensure we have
+            // a catch all allow region during setup, let's reserve it now
+            *(regions.last_mut().unwrap()) = Some(PMPRegion {
+                // Set the size to zero so we don't get overlap errors latter
+                location: (0x00000000 as *const u8, 0x00000000),
+                cfg: pmpcfg::l::CLEAR
+                    + pmpcfg::r::SET
+                    + pmpcfg::w::SET
+                    + pmpcfg::x::SET
+                    + pmpcfg::a::TOR,
+            });
+        }
+
         PMPConfig {
-            regions: [None; MAX_AVAILABLE_REGIONS_OVER_TWO],
+            regions,
             is_dirty: Cell::new(true),
             app_memory_region: OptionalCell::empty(),
         }
@@ -752,64 +782,9 @@ impl<const MAX_AVAILABLE_REGIONS_OVER_TWO: usize> kernel::platform::mpu::MPU
     }
 }
 
-impl<const MAX_AVAILABLE_REGIONS_OVER_TWO: usize> kernel::platform::mpu::KernelMPU
-    for PMP<MAX_AVAILABLE_REGIONS_OVER_TWO>
+impl<const MAX_AVAILABLE_REGIONS_OVER_TWO: usize> PMP<MAX_AVAILABLE_REGIONS_OVER_TWO>
 {
-    type KernelMpuConfig = PMPConfig<MAX_AVAILABLE_REGIONS_OVER_TWO>;
-
-    fn allocate_kernel_region(
-        &self,
-        memory_start: *const u8,
-        memory_size: usize,
-        permissions: mpu::Permissions,
-        config: &mut Self::KernelMpuConfig,
-    ) -> Option<mpu::Region> {
-        for region in config.regions.iter() {
-            if region.is_some() {
-                if region.unwrap().overlaps(memory_start, memory_size) {
-                    return None;
-                }
-            }
-        }
-
-        let region_num = config.unused_kernel_region_number(self.locked_region_mask.get())?;
-
-        // Logical region
-        let mut start = memory_start as usize;
-        let mut size = memory_size;
-
-        // Region start always has to align to 4 bytes
-        if start % 4 != 0 {
-            start += 4 - (start % 4);
-        }
-
-        // Region size always has to align to 4 bytes
-        if size % 4 != 0 {
-            size += 4 - (size % 4);
-        }
-
-        // Regions must be at least 8 bytes
-        if size < 8 {
-            size = 8;
-        }
-
-        let region = PMPRegion::new_kernel(start as *const u8, size, permissions);
-
-        if region.is_none() {
-            return None;
-        }
-
-        config.regions[region_num] = region;
-
-        // Mark the region as locked so that the app PMP doesn't use it.
-        let mut mask = self.locked_region_mask.get();
-        mask |= 1 << region_num;
-        self.locked_region_mask.set(mask);
-
-        Some(mpu::Region::new(start as *const u8, size))
-    }
-
-    fn enable_kernel_mpu(&self, config: &mut Self::KernelMpuConfig) {
+    fn write_kernel_regions(&self, config: &mut PMPConfig<MAX_AVAILABLE_REGIONS_OVER_TWO>) {
         for (i, region) in config.regions.iter().rev().enumerate() {
             let x = MAX_AVAILABLE_REGIONS_OVER_TWO - i - 1;
             match region {
@@ -859,10 +834,104 @@ impl<const MAX_AVAILABLE_REGIONS_OVER_TWO: usize> kernel::platform::mpu::KernelM
                 None => {}
             };
         }
+    }
+}
+
+impl<const MAX_AVAILABLE_REGIONS_OVER_TWO: usize> kernel::platform::mpu::KernelMPU
+    for PMP<MAX_AVAILABLE_REGIONS_OVER_TWO>
+{
+    type KernelMpuConfig = PMPConfig<MAX_AVAILABLE_REGIONS_OVER_TWO>;
+
+    fn allocate_kernel_region(
+        &self,
+        memory_start: *const u8,
+        memory_size: usize,
+        permissions: mpu::Permissions,
+        config: &mut Self::KernelMpuConfig,
+    ) -> Option<mpu::Region> {
+        for region in config.regions.iter() {
+            if region.is_some() {
+                if region.unwrap().overlaps(memory_start, memory_size) {
+                    // panic!("overlaps: {}", region.unwrap());
+                    return None;
+                }
+            }
+        }
+
+        let region_num = config.unused_kernel_region_number(self.locked_region_mask.get())?;
+
+        // Logical region
+        let mut start = memory_start as usize;
+        let mut size = memory_size;
+
+        // Region start always has to align to 4 bytes
+        if start % 4 != 0 {
+            start += 4 - (start % 4);
+        }
+
+        // Region size always has to align to 4 bytes
+        if size % 4 != 0 {
+            size += 4 - (size % 4);
+        }
+
+        // Regions must be at least 8 bytes
+        if size < 8 {
+            size = 8;
+        }
+
+        let region = PMPRegion::new_kernel(start as *const u8, size, permissions);
+
+        if region.is_none() {
+            return None;
+        }
+
+        config.regions[region_num] = region;
+
+        // Mark the region as locked so that the app PMP doesn't use it.
+        let mut mask = self.locked_region_mask.get();
+        mask |= 1 << region_num;
+        self.locked_region_mask.set(mask);
+
+        Some(mpu::Region::new(start as *const u8, size))
+    }
+
+    fn enable_kernel_mpu(&self, config: &mut Self::KernelMpuConfig) {
+        debug!("csr::CSR.mseccfg: 0x{:x}", csr::CSR.mseccfg.get());
+        if csr::CSR.mseccfg.is_set(csr::mseccfg::mseccfg::mmwp) {
+            // MMWP is set, so let's edit the size of the last region to allow all
+            if let Some(last_region) = config.regions.last_mut().as_mut().unwrap().as_mut() {
+                last_region.location = (0x00000000 as *const u8, 0xFFFF_FFFC);
+            }
+        }
+
+        self.write_kernel_regions(config);
+
+        if csr::CSR.mseccfg.is_set(csr::mseccfg::mseccfg::mmwp) {
+            // Now that we have written an initial copy, we can remove our
+            // cache all instance and re-write the configs. We can rotate the
+            // array to the right to free up another PMP region.
+            if let Some(last) = config.regions.last_mut() {
+                *last = None;
+            }
+            config.regions.rotate_right(1);
+
+            // As we write them in reverse order this ends up being safe
+            // self.write_kernel_regions(config);
+
+
+
+
+            //     csr::CSR.pmpaddr_set(0, 0x00);
+            //     csr::CSR.pmpaddr_set(1, 0x00);
+            //     csr::CSR.pmpconfig_set(0, 0x00);
+            //     csr::CSR.mseccfg.modify(csr::mseccfg::mseccfg::rlb::CLEAR);
+        }
 
         // Set the Machine Mode Lockdown (mseccfg.MML) bit.
         // This is a sticky bit, meaning that once set it cannot be unset
         // until a hard reset.
-        csr::CSR.mseccfg.modify(csr::mseccfg::mseccfg::mml::SET);
+        // csr::CSR.mseccfg.modify(csr::mseccfg::mseccfg::mml::SET);
+
+
     }
 }
