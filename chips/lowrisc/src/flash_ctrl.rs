@@ -193,7 +193,7 @@ register_bitfields![u32,
     ]
 ];
 
-pub const PAGE_SIZE: usize = 64;
+pub const PAGE_SIZE: usize = 2048;
 
 pub struct LowRiscPage(pub [u8; PAGE_SIZE as usize]);
 
@@ -367,6 +367,8 @@ impl<'a> FlashCtrl<'a> {
                 {
                     let data = self.registers.rd_fifo.get().to_ne_bytes();
                     let buf_offset = self.read_index.get();
+
+                    debug!("Read: 0x{:x?}", data);
 
                     buf[buf_offset] = data[0];
                     buf[buf_offset + 1] = data[1];

@@ -494,8 +494,8 @@ unsafe fn setup() -> (
     let tickv = components::tickv::TicKVComponent::new(
         sip_hash,
         &mux_flash,                                  // Flash controller
-        0x20060000 / lowrisc::flash_ctrl::PAGE_SIZE, // Region offset (size / page_size)
-        0x20000,                                     // Region size
+        0x2007F800 / lowrisc::flash_ctrl::PAGE_SIZE, // Region offset (size / page_size)
+        0x7F800,                                     // Region size
         flash_ctrl_read_buf,                         // Buffer used internally in TicKV
         page_buffer,                                 // Buffer used with the flash controller
     )
