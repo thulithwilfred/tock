@@ -71,7 +71,7 @@ register_bitfields![u32,
             INSTANTIATE_SOURCE_XOR_SEED = 0,
             INSTANTIATE_ZERO_ADDITIONAL_SEED = 1,
         ],
-        GLEN OFFSET(12) NUMBITS(19) [],
+        GLEN OFFSET(12) NUMBITS(13) [],
     ],
     GENBIT_VLD [
         GENBITS_VLD OFFSET(0) NUMBITS(1) [],
@@ -81,6 +81,8 @@ register_bitfields![u32,
         CMD_STS OFFSET(1) NUMBITS(1) [],
     ],
 ];
+
+pub const TWO_UNITS_OF_128BIT_ENTROPY: u32 = 0x02;
 
 pub struct CsRng<'a> {
     registers: StaticRef<CsRngRegisters>,
@@ -170,6 +172,20 @@ impl<'a> CsRng<'a> {
             }
         }
     }
+
+    /// Wait for the IP to be ready for a new command, if we take too long and timeout
+    /// return BUSY. This MUST be checked prior to issuing new commands.
+    /// CMD_RDY: is set when the command interface is ready to accept a command.
+    fn wait_for_cmd_ready(&self) -> Result<(), ErrorCode> {
+        for _i in 0..10000 {
+            if self.registers.sw_cmd_sts.is_set(SW_CMD_STS::CMD_RDY) {
+                // We are ready to issue a command
+                return Ok(());
+            }
+        }
+        // Timed out
+        return Err(ErrorCode::BUSY);
+    }
 }
 
 impl<'a> Entropy32<'a> for CsRng<'a> {
@@ -189,18 +205,25 @@ impl<'a> Entropy32<'a> for CsRng<'a> {
             CTRL::ENABLE::ENABLE + CTRL::READ_INT_STATE::ENABLE + CTRL::SW_APP_ENABLE::ENABLE,
         );
 
+        // Check if IP ready for new command
+        match self.wait_for_cmd_ready() {
+            Ok(()) => {}
+            Err(e) => return Err(e),
+        }
+
+        // Init IP
         self.registers.cmd_req.write(
             COMMAND::ACMD::INSTANTIATE
-                + COMMAND::FLAGS.val(0)
-                + COMMAND::CLEN.val(0)
-                + COMMAND::GLEN.val(0),
+                + COMMAND::FLAGS::INSTANTIATE_ZERO_ADDITIONAL_SEED
+                + COMMAND::CLEN.val(0x00)
+                + COMMAND::GLEN.val(0x00),
         );
-        while !self.registers.sw_cmd_sts.is_set(SW_CMD_STS::CMD_RDY) {}
-        debug!(
-            "sw_cmd_sts: {}; err_code: {}",
-            self.registers.sw_cmd_sts.get(),
-            self.registers.err_code.get()
-        );
+
+        // Check if IP ready for new command
+        match self.wait_for_cmd_ready() {
+            Ok(()) => {}
+            Err(e) => return Err(e),
+        }
 
         self.disable_interrupts();
         self.enable_interrupts();
@@ -209,17 +232,8 @@ impl<'a> Entropy32<'a> for CsRng<'a> {
         self.registers.cmd_req.write(
             COMMAND::ACMD::GENERATE
                 + COMMAND::FLAGS::INSTANTIATE_SOURCE_XOR_SEED
-                + COMMAND::GLEN.val(0x2),
-        );
-
-        debug!(
-            "sw_cmd_sts: {}; err_code: {}",
-            self.registers.sw_cmd_sts.get(),
-            self.registers.err_code.get()
-        );
-        debug!(
-            "self.registers.genbits.get(): {}",
-            self.registers.genbits.get()
+                + COMMAND::CLEN.val(0x00)
+                + COMMAND::GLEN.val(TWO_UNITS_OF_128BIT_ENTROPY),
         );
 
         Ok(())
