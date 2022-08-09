@@ -378,9 +378,9 @@ impl<'a> FlashCtrl<'a> {
         }
     }
 
-    fn configure_data_partition(&self, num: FlashRegion) {
+    fn configure_data_partition(&self, num: FlashRegion) -> Result<(), ErrorCode> {
         if !self.bank_cfg_unlocked() {
-            panic!("Bank config locked");
+            return Err(ErrorCode::NOSUPPORT);
         }
 
         self.registers.default_region.write(
@@ -405,11 +405,13 @@ impl<'a> FlashCtrl<'a> {
         // Enable MP Region
         self.registers.mp_region_cfg[num as usize].modify(MP_REGION_CFG::EN::Set);
         self.data_configured.set(true);
+
+        Ok(())
     }
 
-    fn configure_info_partition(&self, bank: FlashBank, num: FlashRegion) {
+    fn configure_info_partition(&self, bank: FlashBank, num: FlashRegion) -> Result<(), ErrorCode> {
         if !self.bank_cfg_unlocked() {
-            panic!("Bank config locked");
+            return Err(ErrorCode::NOSUPPORT);
         }
 
         if bank == FlashBank::BANK0 {
@@ -433,9 +435,10 @@ impl<'a> FlashCtrl<'a> {
             );
             self.registers.bank1_info0_page_cfg[num as usize].modify(BANK_INFO_PAGE_CFG::EN::Set);
         } else {
-            panic!("Unsupported bank");
+            return Err(ErrorCode::NOSUPPORT);
         }
         self.info_configured.set(true);
+        Ok(())
     }
 
     pub fn handle_interrupt(&self) {
@@ -592,12 +595,18 @@ impl hil::flash::Flash for FlashCtrl<'_> {
 
         if !self.info_configured.get() {
             // The info partitions have no default access. Specifically set up a region.
-            self.configure_info_partition(FlashBank::BANK1, self.region_num);
+            match self.configure_info_partition(FlashBank::BANK1, self.region_num) {
+                Ok(()) => {}
+                Err(e) => return Err((e, buf)),
+            }
         }
 
         if !self.data_configured.get() {
             // If we aren't configured yet, configure now
-            self.configure_data_partition(self.region_num);
+            match self.configure_data_partition(self.region_num) {
+                Ok(()) => {}
+                Err(e) => return Err((e, buf)),
+            }
         }
 
         // Enable interrupts and set the FIFO level
@@ -641,12 +650,18 @@ impl hil::flash::Flash for FlashCtrl<'_> {
         if !self.info_configured.get() {
             // If we aren't configured yet, configure now
             // The info partitions have no default access. Specifically set up a region.
-            self.configure_info_partition(FlashBank::BANK1, self.region_num);
+            match self.configure_info_partition(FlashBank::BANK1, self.region_num) {
+                Ok(()) => {}
+                Err(e) => return Err((e, buf)),
+            }
         }
 
         if !self.data_configured.get() {
             // If we aren't configured yet, configure now
-            self.configure_data_partition(self.region_num);
+            match self.configure_data_partition(self.region_num) {
+                Ok(()) => {}
+                Err(e) => return Err((e, buf)),
+            }
         }
 
         // Check control status before we commit
@@ -717,12 +732,12 @@ impl hil::flash::Flash for FlashCtrl<'_> {
 
         if !self.data_configured.get() {
             // If we aren't configured yet, configure now
-            self.configure_data_partition(self.region_num);
+            self.configure_data_partition(self.region_num)?;
         }
 
         if !self.info_configured.get() {
             // If we aren't configured yet, configure now
-            self.configure_info_partition(FlashBank::BANK1, self.region_num);
+            self.configure_info_partition(FlashBank::BANK1, self.region_num)?;
         }
 
         // Disable bank erase
