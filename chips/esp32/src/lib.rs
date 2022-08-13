@@ -7,4 +7,5 @@
 pub mod gpio;
 pub mod rtc_cntl;
 pub mod timg;
+pub mod tsens;
 pub mod uart;

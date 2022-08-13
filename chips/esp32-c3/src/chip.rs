@@ -34,6 +34,7 @@ pub struct Esp32C3DefaultPeripherals<'a> {
     pub timg1: timg::TimG<'a>,
     pub gpio: esp32::gpio::Port<'a>,
     pub rtc_cntl: esp32::rtc_cntl::RtcCntl,
+    pub tsens_ctl: esp32::tsens::tsens_ctl<'a>,
     pub sysreg: sysreg::SysReg,
 }
 
@@ -45,6 +46,7 @@ impl<'a> Esp32C3DefaultPeripherals<'a> {
             timg1: timg::TimG::new(timg::TIMG1_BASE, timg::ClockSource::Pll),
             gpio: esp32::gpio::Port::new(),
             rtc_cntl: esp32::rtc_cntl::RtcCntl::new(esp32::rtc_cntl::RTC_CNTL_BASE),
+            tsens_ctl: esp32::tsens::tsens_ctl::new(esp32::tsens::APB_BASE),
             sysreg: sysreg::SysReg::new(),
         }
     }
