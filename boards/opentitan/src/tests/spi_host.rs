@@ -140,7 +140,7 @@ fn spi_host_transfer_partial() {
     spi_host.set_client(cb);
     cb.reset();
 
-    #[cfg(feature = "hardware_tests")]
+    //#[cfg(feature = "hardware_tests")]
     {
         let tx = cb.tx_data.take().unwrap();
         let rx = cb.rx_data.take().unwrap();
@@ -180,7 +180,7 @@ fn spi_host_transfer_single() {
     spi_host.set_client(cb);
     cb.reset();
 
-    #[cfg(feature = "hardware_tests")]
+    //#[cfg(feature = "hardware_tests")]
     {
         let tx = cb.tx_data.take().unwrap();
         let rx = cb.rx_data.take().unwrap();
@@ -210,7 +210,7 @@ fn spi_host_transfer_single() {
 
     cb.reset();
 
-    #[cfg(feature = "hardware_tests")]
+    //#[cfg(feature = "hardware_tests")]
     {
         let tx2 = cb.tx_data.take().unwrap();
         let rx2 = cb.rx_data.take().unwrap();
