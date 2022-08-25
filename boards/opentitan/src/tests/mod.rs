@@ -49,14 +49,15 @@ fn trivial_assertion() {
     run_kernel_op(100);
 }
 
-mod aes_test;
-mod csrng;
-mod hmac;
-mod multi_alarm;
-mod otbn;
-mod rsa;
-mod rsa_4096;
-mod sha256soft_test; // Test software SHA capsule
-mod sip_hash;
-mod spi_host;
-mod tickv_test;
+//mod aes_test;
+//mod csrng;
+//mod hmac;
+//mod multi_alarm;
+//mod otbn;
+//mod rsa;
+//mod rsa_4096;
+//mod sha256soft_test; // Test software SHA capsule
+//mod sip_hash;
+//mod spi_host;
+//mod tickv_test;
+mod flash_ctl;
