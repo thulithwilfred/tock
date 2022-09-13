@@ -365,7 +365,7 @@ impl<'a> FlashCtrl<'a> {
         // Calculate and return the max window limit possible for this transaction in words
         let window_limit =
             ((word_addr + FLASH_PROG_WINDOW_SIZE as u32) & FLASH_PROG_WINDOW_MASK) - word_addr;
-        let words_to_write = rem_bytes / 4;
+        let words_to_write = rem_bytes.saturating_div(4);
 
         if words_to_write < window_limit {
             words_to_write
@@ -491,7 +491,7 @@ impl<'a> FlashCtrl<'a> {
                 // Set the address
                 self.registers
                     .addr
-                    .write(ADDR::START.val(self.write_word_addr.get() as u32 * 4));
+                    .write(ADDR::START.val((self.write_word_addr.get() as u32).saturating_mul(4)));
 
                 // Start the transaction
                 self.registers.control.modify(CONTROL::START::SET);
@@ -576,7 +576,7 @@ impl hil::flash::Flash for FlashCtrl<'_> {
         page_number: usize,
         buf: &'static mut Self::Page,
     ) -> Result<(), (ErrorCode, &'static mut Self::Page)> {
-        let addr = page_number * PAGE_SIZE;
+        let addr = page_number.saturating_mul(PAGE_SIZE);
 
         if !self.info_configured.get() {
             // The info partitions have no default access. Specifically set up a region.
@@ -606,7 +606,7 @@ impl hil::flash::Flash for FlashCtrl<'_> {
             CONTROL::OP::READ
                 + CONTROL::PARTITION_SEL::DATA
                 + CONTROL::INFO_SEL::SET
-                + CONTROL::NUM.val(((PAGE_SIZE / 4) - 1) as u32)
+                + CONTROL::NUM.val(((PAGE_SIZE.saturating_div(4)) - 1) as u32)
                 + CONTROL::START::CLEAR,
         );
 
@@ -624,7 +624,7 @@ impl hil::flash::Flash for FlashCtrl<'_> {
         page_number: usize,
         buf: &'static mut Self::Page,
     ) -> Result<(), (ErrorCode, &'static mut Self::Page)> {
-        let addr = page_number * PAGE_SIZE;
+        let addr = page_number.saturating_mul(PAGE_SIZE);
 
         if !self.info_configured.get() {
             // If we aren't configured yet, configure now
@@ -644,7 +644,7 @@ impl hil::flash::Flash for FlashCtrl<'_> {
 
         // Writes should not cross programming resolution window boundaries, which
         // occur at every FLASH_PROG_WINDOW_SIZE words.
-        let word_address = addr / 4;
+        let word_address = addr.saturating_div(4);
 
         let transaction_word_len =
             self.calculate_max_prog_len(word_address as u32, buf.0.len() as u32);
@@ -688,7 +688,7 @@ impl hil::flash::Flash for FlashCtrl<'_> {
         }
 
         self.write_word_addr
-            .set((addr / 4) + words_written as usize);
+            .set((addr.saturating_div(4)) + words_written as usize);
 
         // Save the buffer
         self.write_buf.replace(buf);
@@ -701,7 +701,7 @@ impl hil::flash::Flash for FlashCtrl<'_> {
     }
 
     fn erase_page(&self, page_number: usize) -> Result<(), ErrorCode> {
-        let addr = page_number * PAGE_SIZE;
+        let addr = page_number.saturating_mul(PAGE_SIZE);
 
         if !self.data_configured.get() {
             // If we aren't configured yet, configure now
