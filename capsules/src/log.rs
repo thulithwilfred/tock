@@ -846,7 +846,7 @@ impl<'a, F: Flash + 'static> flash::Client<F> for Log<'a, F> {
                     _ => unreachable!(),
                 }
             }
-            flash::Error::FlashError => {
+            flash::Error::FlashError | flash::Error::FlashMPError => {
                 // Make client callback with FAIL return code.
                 self.pagebuffer.replace(pagebuffer);
                 match self.state.get() {
@@ -894,7 +894,7 @@ impl<'a, F: Flash + 'static> flash::Client<F> for Log<'a, F> {
                     }
                 }
             }
-            flash::Error::FlashError => {
+            flash::Error::FlashError | flash::Error::FlashMPError => {
                 self.error.set(Err(ErrorCode::FAIL));
                 self.client_callback();
             }

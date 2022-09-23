@@ -100,6 +100,9 @@ pub enum Error {
 
     /// An error occurred during the flash operation.
     FlashError,
+
+    /// A flash memory protection violation was detected
+    FlashMPError,
 }
 
 pub trait HasClient<'a, C> {
@@ -141,4 +144,117 @@ pub trait Client<F: Flash> {
 
     /// Flash erase complete.
     fn erase_complete(&self, error: Error);
+}
+
+// *** Interfaces for hardware with flash memory protection support ***
+
+/// Define the basic region permissions for flash memory protection.
+#[derive(PartialEq, Debug)]
+pub struct FlashMPBasicConfig {
+    /// Region can be read.
+    pub read_en: bool,
+    /// Region can be programmed.
+    pub write_en: bool,
+}
+
+/// Memory access control protection for flash. For hardware that supports
+/// flash memory protection, this can be used to implement the relevant functionality.
+///
+/// Requires the Flash interface to have been implemented as well.
+pub trait FlashMemoryProtection: Flash {
+    /// Configure and enable the specified flash memory protection configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `page_number` - Defines the starting page number to apply configuration to
+    /// * `num_pages` - Number of pages the configs are applied to (region size)
+    /// * `region_num` - The configuration region number associated with this region
+    /// * `mp_perms` - Specifies the permissions to set
+    fn set_region_perms(
+        &self,
+        page_number: usize,
+        num_pages: usize,
+        region_num: usize,
+        mp_perms: &FlashMPBasicConfig,
+    ) -> Result<(), ErrorCode>;
+
+    /// Read the flash memory protection configuration bounded by the specified region
+    ///
+    /// # Arguments
+    ///
+    /// * `region_num` - The configuration region number associated with this region
+    fn read_region_perms(&self, region_num: usize) -> Result<FlashMPBasicConfig, ErrorCode>;
+
+    /// Get the number of configuration regions supported by this hardware
+    ///
+    /// Note: Indexing typically starts with 0, this returns the total
+    /// number of configuration registers.
+    /// Example: if retval is 8, index 7 is the upper limit.
+    fn get_num_regions(&self) -> Result<u32, ErrorCode>;
+
+    /// Check if the specified `region_num` is locked by hardware
+    ///
+    /// # Arguments
+    ///
+    /// * `region_num` - The configuration region number associated with this region
+    fn is_region_locked(&self, region_num: usize) -> Result<bool, ErrorCode>;
+
+    /// Lock the configuration
+    /// If supported by hardware, locks the config bounded by `region_num`
+    /// such that no further modifications can be made until the next system reset.
+    ///
+    /// # Arguments
+    ///
+    /// * `region_num` - The configuration region number associated with this region
+    fn lock_region_cfg(&self, region_num: usize) -> Result<(), ErrorCode>;
+}
+
+// *** Interfaces for hardware with advanced flash memory protection support ***
+
+/// Defines region permissions for flash memory protection.
+/// With support to control more advanced features.
+#[derive(PartialEq, Debug)]
+pub struct FlashMPAdvConfig {
+    /// Region can be read.
+    pub read_en: bool,
+    /// Region can be programmed.
+    pub write_en: bool,
+    /// Region can be erased
+    pub erase_en: bool,
+    /// Region is scramble enabled
+    pub scramble_en: bool,
+    /// Region has ECC enabled
+    pub ecc_en: bool,
+    /// Region is high endurance enabled
+    pub he_en: bool,
+}
+
+/// Extends FlashMemoryProtection to interface advanced flash
+/// memory protection controllers with more control/functionality.
+/// For devices that only support r/w permissions only use `FlashMemoryProtection`.
+///
+/// Requires the Flash and FlashMemoryProtection interfaces to have been implemented as well.
+pub trait FlashMemoryProtectionAdvanced: FlashMemoryProtection + Flash {
+    /// Setup the specified flash memory protection configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `page_number` - Defines the starting page number to apply configuration to
+    /// * `num_pages` - Number of pages the configs are applied to (region size)
+    /// * `region_num` - The configuration region number associated with this region
+    /// * `mp_perms` - Specifies the permissions to set
+    fn set_adv_region_perms(
+        &self,
+        page_number: usize,
+        num_pages: usize,
+        region_num: usize,
+        mp_perms: &FlashMPAdvConfig,
+    ) -> Result<(), ErrorCode>;
+
+    /// Read the flash memory protection configuration bounded by the specified region
+    ///
+    /// # Arguments
+    ///
+    /// * `region_num` - The configuration region number associated with this region
+    fn read_adv_region_perms(&self, region_num: usize) -> Result<FlashMPAdvConfig, ErrorCode>;
 }
