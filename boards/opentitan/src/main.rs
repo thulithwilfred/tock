@@ -10,6 +10,7 @@
 #![test_runner(test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+use crate::hil::flash::FlashMPAdvConfig;
 use crate::hil::symmetric_encryption::AES128_BLOCK_SIZE;
 use crate::otbn::OtbnComponent;
 use capsules::virtual_aes_ccm;
@@ -23,6 +24,8 @@ use kernel::dynamic_deferred_call::{DynamicDeferredCall, DynamicDeferredCallClie
 use kernel::hil;
 use kernel::hil::digest::Digest;
 use kernel::hil::entropy::Entropy32;
+use kernel::hil::flash::FlashMemoryProtection;
+use kernel::hil::flash::FlashMemoryProtectionAdvanced;
 use kernel::hil::hasher::Hasher;
 use kernel::hil::i2c::I2CMaster;
 use kernel::hil::kv_system::KVSystem;
@@ -214,6 +217,11 @@ impl KernelResources<earlgrey::chip::EarlGrey<'static, EarlGreyDefaultPeripheral
     fn context_switch_callback(&self) -> &Self::ContextSwitchCallback {
         &()
     }
+}
+
+#[inline(always)]
+fn div_ceil(a: u32, b: u32) -> u32 {
+    a.saturating_add(b).saturating_sub(1).saturating_div(b)
 }
 
 unsafe fn setup() -> (
@@ -462,6 +470,36 @@ unsafe fn setup() -> (
         /// Beginning on the ROM region containing app images.
         static _sstorage: u8;
         static _estorage: u8;
+    }
+
+    // Flash setup memory protection for the ROM/Kernel
+    let etext_addr = &_etext as *const u8 as u32;
+    let smanifest_addr = &_manifest as *const u8 as u32;
+    // Protect from ROM start to end of text
+    let text_end = etext_addr.checked_sub(smanifest_addr).unwrap(); // Unwrap fail = addresses have updated in an unexpected way, this should be revised.
+    let num_pages_occupied = div_ceil(text_end, lowrisc::flash_ctrl::PAGE_SIZE as u32);
+    // Only allow reads for this region, any other ops will cause an MP fault
+    let mp_cfg = FlashMPAdvConfig {
+        read_en: true,
+        write_en: false,
+        erase_en: false,
+        scramble_en: false,
+        ecc_en: false,
+        he_en: false,
+    };
+
+    // Starting from page 0 (start of flash) to num_pages_occupied on `region 0`.
+    if let Err(e) =
+        peripherals
+            .flash_ctrl
+            .set_adv_region_perms(0, num_pages_occupied as usize, 0, &mp_cfg)
+    {
+        debug!("Failed to set flash memory protection: {:?}", e);
+    } else {
+        // Lock region 0, until next system reset.
+        if let Err(e) = peripherals.flash_ctrl.lock_region_cfg(0) {
+            debug!("Failed to lock memory protection config: {:?}", e);
+        }
     }
 
     // Flash
