@@ -18,6 +18,7 @@ pub mod hmac;
 pub mod i2c;
 pub mod otbn;
 pub mod plic;
+pub mod pwm;
 pub mod pwrmgr;
 pub mod spi_host;
 pub mod timer;
