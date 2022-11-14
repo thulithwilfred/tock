@@ -8,3 +8,4 @@ pub mod gpio;
 pub mod rtc_cntl;
 pub mod timg;
 pub mod uart;
+pub mod ledc;
